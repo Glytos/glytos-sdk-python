@@ -18,4 +18,4 @@ from ._client import Glytos, GlytosError
 from ._webhooks import verify_webhook
 
 __all__ = ["Glytos", "GlytosError", "verify_webhook"]
-__version__ = "0.1.0"
+__version__ = "0.1.1"

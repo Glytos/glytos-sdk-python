@@ -38,7 +38,7 @@ def verify_webhook(
     expected = hmac.new(
         secret.encode("utf-8"), f"{timestamp}.".encode() + body, hashlib.sha256
     ).hexdigest()
-    if not hmac.compare_digest(expected, provided):
+    if not hmac.compare_digest(expected.encode(), provided.encode()):
         return False
 
     if tolerance_seconds > 0:

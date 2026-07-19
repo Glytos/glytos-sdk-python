@@ -45,6 +45,24 @@ def test_drops_null_query_parameters() -> None:
     assert captured["request"].url.query.decode() == "status=completed"
 
 
+def test_path_parameters_are_percent_encoded() -> None:
+    captured: dict[str, httpx.Request] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    client.workflows.retrieve("../secret?x=1#y")
+
+    url = captured["request"].url
+    # The slash, query and fragment characters are encoded on the wire, so the request
+    # can neither traverse to another path nor inject query/fragment components.
+    assert url.raw_path == b"/api/v1/workflows/..%2Fsecret%3Fx%3D1%23y"
+    assert url.query == b""
+    assert url.fragment == ""
+
+
 def test_error_response_raises_glytos_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

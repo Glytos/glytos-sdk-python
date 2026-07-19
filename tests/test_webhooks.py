@@ -34,6 +34,11 @@ def test_rejects_a_malformed_header() -> None:
     assert not verify_webhook(BODY, f"t={TS}", SECRET, tolerance_seconds=0)
 
 
+def test_rejects_a_non_ascii_signature() -> None:
+    # A non-ASCII v1= value must return False, not raise TypeError from compare_digest.
+    assert not verify_webhook(BODY, header(TS, "deadbeefé"), SECRET, tolerance_seconds=0)
+
+
 def test_rejects_an_expired_delivery() -> None:
     # With the default tolerance the 2024 timestamp is far outside the window.
     assert not verify_webhook(BODY, header(TS, SIG), SECRET)

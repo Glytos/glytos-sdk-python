@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -114,7 +115,7 @@ class Workflows(_Resource):
         return self._client.request("GET", "/workflows")
 
     def retrieve(self, workflow_uuid: str) -> JSON:
-        return self._client.request("GET", f"/workflows/{workflow_uuid}")
+        return self._client.request("GET", f"/workflows/{quote(workflow_uuid, safe='')}")
 
     def create(
         self, *, name: str, mode: str = "prompt", config: dict[str, Any] | None = None
@@ -125,20 +126,25 @@ class Workflows(_Resource):
         return self._client.request("POST", "/workflows", json=body)
 
     def publish(self, workflow_uuid: str) -> JSON:
-        return self._client.request("POST", f"/workflows/{workflow_uuid}/publish")
+        return self._client.request("POST", f"/workflows/{quote(workflow_uuid, safe='')}/publish")
 
     def delete(self, workflow_uuid: str) -> JSON:
-        return self._client.request("DELETE", f"/workflows/{workflow_uuid}")
+        return self._client.request("DELETE", f"/workflows/{quote(workflow_uuid, safe='')}")
 
     def templates(self) -> JSON:
         return self._client.request("GET", "/workflows/templates")
 
     def session(self, workflow_uuid: str, session_uuid: str) -> JSON:
-        return self._client.request("GET", f"/workflows/{workflow_uuid}/sessions/{session_uuid}")
+        return self._client.request(
+            "GET",
+            f"/workflows/{quote(workflow_uuid, safe='')}/sessions/{quote(session_uuid, safe='')}",
+        )
 
     def session_events(self, workflow_uuid: str, session_uuid: str) -> JSON:
         return self._client.request(
-            "GET", f"/workflows/{workflow_uuid}/sessions/{session_uuid}/events"
+            "GET",
+            f"/workflows/{quote(workflow_uuid, safe='')}"
+            f"/sessions/{quote(session_uuid, safe='')}/events",
         )
 
 
@@ -150,7 +156,7 @@ class Calls(_Resource):
         return self._client.request("GET", "/calls", params=params)
 
     def retrieve(self, call_uuid: str) -> JSON:
-        return self._client.request("GET", f"/calls/{call_uuid}")
+        return self._client.request("GET", f"/calls/{quote(call_uuid, safe='')}")
 
     def web_token(
         self, *, workflow_uuid: str | None = None, agent: dict[str, Any] | None = None
@@ -164,7 +170,9 @@ class Calls(_Resource):
         return self._client.request("POST", "/calls/web-token", json=body)
 
     def control(self, call_uuid: str, **body: Any) -> JSON:
-        return self._client.request("POST", f"/calls/{call_uuid}/control", json=body)
+        return self._client.request(
+            "POST", f"/calls/{quote(call_uuid, safe='')}/control", json=body
+        )
 
 
 class PhoneNumbers(_Resource):
@@ -178,10 +186,12 @@ class PhoneNumbers(_Resource):
         return self._client.request("POST", "/telephony/numbers", json={"e164": e164, **body})
 
     def assign(self, number_uuid: str, **body: Any) -> JSON:
-        return self._client.request("POST", f"/telephony/numbers/{number_uuid}/assign", json=body)
+        return self._client.request(
+            "POST", f"/telephony/numbers/{quote(number_uuid, safe='')}/assign", json=body
+        )
 
     def release(self, number_uuid: str) -> JSON:
-        return self._client.request("DELETE", f"/telephony/numbers/{number_uuid}")
+        return self._client.request("DELETE", f"/telephony/numbers/{quote(number_uuid, safe='')}")
 
 
 class Sessions(_Resource):
@@ -199,7 +209,9 @@ class Webhooks(_Resource):
         )
 
     def delete(self, endpoint_id: int | str) -> JSON:
-        return self._client.request("DELETE", f"/webhooks/endpoints/{endpoint_id}")
+        return self._client.request(
+            "DELETE", f"/webhooks/endpoints/{quote(str(endpoint_id), safe='')}"
+        )
 
     def events(self) -> JSON:
         return self._client.request("GET", "/webhooks/events")
