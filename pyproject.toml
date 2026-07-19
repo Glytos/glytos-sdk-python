@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "glytos"
+version = "0.1.0"
+description = "Official Glytos server SDK for Python."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Glytos" }]
+keywords = ["glytos", "voice", "ai", "agent", "sdk", "api"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+]
+dependencies = ["httpx>=0.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.5", "mypy>=1.8"]
+
+[project.urls]
+Homepage = "https://glytos.com"
+Documentation = "https://glytos.com/en/docs"
+Repository = "https://github.com/Glytos/glytos-sdk-python"
+Issues = "https://github.com/Glytos/glytos-sdk-python/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["glytos"]
+
+[tool.hatch.build.targets.sdist]
+include = ["glytos", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_configs = true
+disallow_untyped_defs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# httpx ships an optional CLI that imports click; skip descending into it so the
+# type check never depends on optional third-party internals.
+module = "httpx.*"
+follow_imports = "skip"
