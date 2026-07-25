@@ -241,12 +241,24 @@ class Workflows(_Resource):
         )
 
 
+def _items(resp: JSON) -> JSON:
+    """Return the items of a paginated ``{items, ...}`` list envelope.
+
+    Most list endpoints return a bare array; the paginated ones wrap results in
+    an ``{items, total, limit, offset}`` object. This unwraps the latter so every
+    list method yields a plain list.
+    """
+    if isinstance(resp, dict) and "items" in resp:
+        return resp["items"]
+    return resp
+
+
 class Calls(_Resource):
     def create(self, **body: Any) -> JSON:
         return self._client.request("POST", "/calls", json=body)
 
     def list(self, **params: Any) -> JSON:
-        return self._client.request("GET", "/calls", params=params)
+        return _items(self._client.request("GET", "/calls", params=params))
 
     def retrieve(self, call_uuid: str) -> JSON:
         return self._client.request("GET", f"/calls/{quote(call_uuid, safe='')}")
@@ -414,15 +426,17 @@ class Webhooks(_Resource):
         limit: int | None = None,
         offset: int | None = None,
     ) -> JSON:
-        return self._client.request(
-            "GET",
-            "/webhooks/deliveries",
-            params={
-                "event_type": event_type,
-                "status": status,
-                "limit": limit,
-                "offset": offset,
-            },
+        return _items(
+            self._client.request(
+                "GET",
+                "/webhooks/deliveries",
+                params={
+                    "event_type": event_type,
+                    "status": status,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
         )
 
     def redeliver(self, delivery_id: int | str) -> JSON:
@@ -778,7 +792,7 @@ class AsyncCalls(_AsyncResource):
         return await self._client.request("POST", "/calls", json=body)
 
     async def list(self, **params: Any) -> JSON:
-        return await self._client.request("GET", "/calls", params=params)
+        return _items(await self._client.request("GET", "/calls", params=params))
 
     async def retrieve(self, call_uuid: str) -> JSON:
         return await self._client.request("GET", f"/calls/{quote(call_uuid, safe='')}")
@@ -950,15 +964,17 @@ class AsyncWebhooks(_AsyncResource):
         limit: int | None = None,
         offset: int | None = None,
     ) -> JSON:
-        return await self._client.request(
-            "GET",
-            "/webhooks/deliveries",
-            params={
-                "event_type": event_type,
-                "status": status,
-                "limit": limit,
-                "offset": offset,
-            },
+        return _items(
+            await self._client.request(
+                "GET",
+                "/webhooks/deliveries",
+                params={
+                    "event_type": event_type,
+                    "status": status,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
         )
 
     async def redeliver(self, delivery_id: int | str) -> JSON:
