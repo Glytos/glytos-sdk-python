@@ -14,8 +14,8 @@ Never ship an API key to the browser. For in-browser voice, use the ``@glytos/we
 package with a short-lived token you mint here via ``calls.web_token(...)``.
 """
 
-from ._client import Glytos, GlytosError
+from ._client import AsyncGlytos, Glytos, GlytosError
 from ._webhooks import verify_webhook
 
-__all__ = ["Glytos", "GlytosError", "verify_webhook"]
+__all__ = ["AsyncGlytos", "Glytos", "GlytosError", "verify_webhook"]
 __version__ = "0.1.1"
