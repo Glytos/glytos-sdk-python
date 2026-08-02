@@ -6,9 +6,10 @@
 
 The official [Glytos](https://glytos.com) server SDK for Python.
 
-Call the Glytos API from your backend with an API key: build and run voice agents,
-start phone calls, mint browser web-call tokens, manage phone numbers, and verify
-webhooks.
+Call the Glytos API from your backend with an API key. Build agents once and run
+them as **text** or as **voice**: hold a threaded conversation, stream a reply as it
+is written, place phone calls, mint browser web-call tokens, manage numbers, and
+verify webhooks.
 
 > Never ship an API key to the browser. For in-browser voice, use the `@glytos/web`
 > package with a short-lived token you mint here.
@@ -27,7 +28,7 @@ from glytos import Glytos
 glytos = Glytos(api_key="gly_...")
 
 # List your agents
-agents = glytos.workflows.list()
+agents = glytos.agents.list()
 
 # Mint a web-call token for the browser
 token = glytos.calls.web_token(workflow_uuid=agents[0]["uuid"])
@@ -79,14 +80,35 @@ Everything above has an async twin on `AsyncGlytos` (`async for` over the stream
 
 | Namespace | Methods |
 | --- | --- |
-| `glytos.workflows` | `list`, `retrieve`, `create`, `publish`, `delete`, `templates`, `session`, `session_events` |
+| `glytos.agents` (alias `workflows`) | `list`, `retrieve`, `create`, `rename`, `publish`, `promote`, `duplicate`, `archive`, `delete`, `templates`, `export`, `move_to_folder`, `remove_from_folder`, `versions`, `start_session`, `send_message`, `stream_message`, `run_text` |
+| `glytos.threads` | `create`, `retrieve`, `messages.create`, `messages.list`, `runs.create`, `runs.stream` |
+| `glytos.folders` | `list`, `create`, `rename`, `delete` |
+| `glytos.imports` | `sources`, `create`, `assistant` |
+| `glytos.chat` | `token`, `messages`, `stream`, `upload_file` |
 | `glytos.calls` | `create`, `list`, `retrieve`, `web_token`, `control` |
-| `glytos.phone_numbers` | `search`, `list`, `provision`, `assign`, `release` |
+| `glytos.phone_numbers` | `search`, `list`, `providers`, `provision`, `import_number`, `instant`, `assign`, `release` |
+| `glytos.knowledge_base` | `list_documents`, `create_document`, `upload_document`, `search` |
+| `glytos.vector_stores` | `list`, `create`, `retrieve`, `delete`, `upload_document` |
+| `glytos.tools` | `list`, `create`, `update`, `delete` |
+| `glytos.campaigns` | `list`, `create`, `retrieve`, `start`, `sync_contacts` |
 | `glytos.sessions` | `list` |
-| `glytos.webhooks` | `list`, `create`, `delete`, `events`, `verify` |
+| `glytos.analytics` | `overview` |
+| `glytos.webhooks` | `list`, `create`, `update`, `delete`, `events`, `deliveries`, `redeliver`, `verify` |
+
+`agents` and `workflows` are the same resource under two names: the product calls
+them agents, the API path is `/workflows`. Either works.
+
+### Text and voice are separate
+
+An agent is one definition. Nothing forces it to do both:
+
+- A **text** agent needs only `threads` (or `chat` for a browser widget).
+- A **voice** agent adds `calls`, `phone_numbers` and `campaigns`.
+- The same agent can do both, if you want it to.
 
 Any endpoint without a dedicated helper is one call away with
-`glytos.request(method, path, json=..., params=...)`.
+`glytos.request(method, path, json=..., params=...)`, or
+`glytos.stream(method, path, json=...)` for a Server-Sent Events one.
 
 ## Errors
 

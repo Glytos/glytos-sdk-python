@@ -181,6 +181,25 @@ def test_folders_and_imports() -> None:
     assert json.loads(seen[2][2]) == {"assistant": {"name": "Support"}}
 
 
+def test_agent_export_and_folder_filing() -> None:
+    seen: list[tuple[str, str, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    client.agents.export("wf_1")
+    client.agents.move_to_folder("wf_1", "fld_1")
+    client.agents.remove_from_folder("wf_1")
+
+    assert seen[0][0] == "GET" and seen[0][1].endswith("/workflows/wf_1/export")
+    assert seen[1][0] == "PATCH"
+    assert json.loads(seen[1][2]) == {"folder_uuid": "fld_1"}
+    # Sent as null is what unfiles an agent; not sent would leave it where it is.
+    assert json.loads(seen[2][2]) == {"folder_uuid": None}
+
+
 def test_uploads_are_multipart_not_json() -> None:
     captured: dict[str, httpx.Request] = {}
 

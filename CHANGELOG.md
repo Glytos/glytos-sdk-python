@@ -17,7 +17,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - File uploads: `chat.upload_file`, `knowledge_base.upload_document`,
   `vector_stores.upload_document`, plus `client.request_form` for any other
   multipart endpoint.
-- `folders` and `imports` namespaces.
+- `folders` and `imports` namespaces, plus `agents.move_to_folder` /
+  `agents.remove_from_folder` to file an agent and `agents.export` for the
+  portable, secret-free JSON that imports back.
 - `agents` as an alias of `workflows`.
 - Everything above on `AsyncGlytos` too.
 

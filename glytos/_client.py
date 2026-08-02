@@ -295,6 +295,28 @@ class Workflows(_Resource):
             "PATCH", f"/workflows/{quote(workflow_uuid, safe='')}", json={"name": name}
         )
 
+    def export(self, workflow_uuid: str) -> JSON:
+        """Export an agent as portable, secret-free JSON.
+
+        It imports back through ``imports.create("glytos", ...)``, on this account
+        or another."""
+        return self._client.request("GET", f"/workflows/{quote(workflow_uuid, safe='')}/export")
+
+    def move_to_folder(self, workflow_uuid: str, folder_uuid: str) -> JSON:
+        """File an agent into a folder. Both must be in the same environment."""
+        return self._client.request(
+            "PATCH",
+            f"/workflows/{quote(workflow_uuid, safe='')}",
+            json={"folder_uuid": folder_uuid},
+        )
+
+    def remove_from_folder(self, workflow_uuid: str) -> JSON:
+        """Take an agent out of its folder, leaving it ungrouped."""
+        # Sent as null is what unfiles it; not sent at all would leave it where it is.
+        return self._client.request(
+            "PATCH", f"/workflows/{quote(workflow_uuid, safe='')}", json={"folder_uuid": None}
+        )
+
     def duplicate(self, workflow_uuid: str) -> JSON:
         return self._client.request("POST", f"/workflows/{quote(workflow_uuid, safe='')}/duplicate")
 
@@ -1082,6 +1104,30 @@ class AsyncWorkflows(_AsyncResource):
     async def rename(self, workflow_uuid: str, name: str) -> JSON:
         return await self._client.request(
             "PATCH", f"/workflows/{quote(workflow_uuid, safe='')}", json={"name": name}
+        )
+
+    async def export(self, workflow_uuid: str) -> JSON:
+        """Export an agent as portable, secret-free JSON.
+
+        It imports back through ``imports.create("glytos", ...)``, on this account
+        or another."""
+        return await self._client.request(
+            "GET", f"/workflows/{quote(workflow_uuid, safe='')}/export"
+        )
+
+    async def move_to_folder(self, workflow_uuid: str, folder_uuid: str) -> JSON:
+        """File an agent into a folder. Both must be in the same environment."""
+        return await self._client.request(
+            "PATCH",
+            f"/workflows/{quote(workflow_uuid, safe='')}",
+            json={"folder_uuid": folder_uuid},
+        )
+
+    async def remove_from_folder(self, workflow_uuid: str) -> JSON:
+        """Take an agent out of its folder, leaving it ungrouped."""
+        # Sent as null is what unfiles it; not sent at all would leave it where it is.
+        return await self._client.request(
+            "PATCH", f"/workflows/{quote(workflow_uuid, safe='')}", json={"folder_uuid": None}
         )
 
     async def duplicate(self, workflow_uuid: str) -> JSON:
