@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format is b
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `threads` - conversations with a text agent: `threads.create`,
+  `threads.retrieve`, `threads.messages.create/list`, `threads.runs.create/stream`.
+- Streaming. `threads.runs.stream`, `agents.stream_message` and `chat.stream` yield
+  `token` deltas and a terminal `done` carrying the finished run.
+- Per-turn `instructions` on every text turn, applied below the agent's own and
+  never saved to it.
+- File uploads: `chat.upload_file`, `knowledge_base.upload_document`,
+  `vector_stores.upload_document`, plus `client.request_form` for any other
+  multipart endpoint.
+- `folders` and `imports` namespaces.
+- `agents` as an alias of `workflows`.
+- Everything above on `AsyncGlytos` too.
+
 ## [0.1.1] - 2026-07-20
 
 ### Fixed

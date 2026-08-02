@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+import json as _json
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Union
 from urllib.parse import quote
 
 import httpx
@@ -13,6 +15,120 @@ from ._webhooks import verify_webhook
 DEFAULT_BASE_URL = "https://api.glytos.com/api/v1"
 
 JSON = Any
+
+
+@dataclass
+class Thread:
+    """A conversation with an agent.
+
+    Created against one agent and carrying its id, so no later call has to repeat
+    it. Pass the object itself wherever a thread is expected.
+    """
+
+    id: str
+    agent: str
+    status: str = ""
+    #: Anything the agent opened with; empty for a silent opening.
+    messages: list[JSON] = field(default_factory=list)
+    #: Everything else the API returned, untouched.
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+#: A thread, or the two ids spelled out as a mapping. Spelled with ``Union`` rather
+#: than ``X | Y`` because this is a runtime expression and the package supports 3.9.
+ThreadRef = Union[Thread, Mapping[str, str]]
+
+#: Events in an SSE stream are separated by a blank line.
+_SSE_SEP = "\n\n"
+
+
+@dataclass
+class StreamEvent:
+    """One Server-Sent Event from a streamed turn.
+
+    ``type`` is ``"token"`` (``delta`` carries the piece), ``"done"`` (``run`` carries
+    the finished turn, the same payload the non-streamed call returns) or ``"error"``.
+    """
+
+    type: str
+    delta: str = ""
+    run: JSON = None
+    message: str = ""
+
+
+def _thread_ids(thread: ThreadRef) -> tuple[str, str]:
+    """The agent and thread ids behind a reference, whichever form was passed."""
+    if isinstance(thread, Thread):
+        agent, thread_id = thread.agent, thread.id
+    else:
+        agent, thread_id = str(thread.get("agent", "")), str(thread.get("id", ""))
+    if not agent or not thread_id:
+        raise ValueError("Glytos: a thread reference needs both 'id' and 'agent'")
+    return agent, thread_id
+
+
+def _turn_body(
+    content: str = "",
+    images: Sequence[str] | None = None,
+    instructions: str | None = None,
+) -> dict[str, Any]:
+    """The turn body shared by the plain and the streamed endpoint."""
+    body: dict[str, Any] = {"content": content}
+    if images is not None:
+        body["images"] = list(images)
+    if instructions is not None:
+        body["additional_instructions"] = instructions
+    return body
+
+
+def _as_thread(agent: str, started: JSON) -> Thread:
+    payload = dict(started or {})
+    return Thread(
+        id=str(payload.pop("session_uuid", "")),
+        agent=agent,
+        status=str(payload.pop("status", "")),
+        messages=list(payload.pop("messages", []) or []),
+        extra=payload,
+    )
+
+
+def _parse_sse(block: str) -> StreamEvent | None:
+    """Turn one raw SSE block ("event: x\\ndata: {...}") into a typed event."""
+    name = ""
+    data_lines: list[str] = []
+    for line in block.split("\n"):
+        if line.startswith("event:"):
+            name = line[6:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].strip())
+    if not name or not data_lines:
+        return None
+    try:
+        data = _json.loads("\n".join(data_lines))
+    except ValueError:
+        data = {}
+    if name == "token":
+        return StreamEvent("token", delta=str(data.get("delta", "")))
+    if name == "error":
+        return StreamEvent("error", message=str(data.get("message", "stream failed")))
+    if name == "done":
+        return StreamEvent("done", run=data)
+    return None
+
+
+def _sse_blocks(chunks: Iterator[str]) -> Iterator[StreamEvent]:
+    """Split a byte/text stream into events, keeping any trailing partial buffered."""
+    buffer = ""
+    for chunk in chunks:
+        buffer += chunk
+        while "\n\n" in buffer:
+            block, buffer = buffer.split("\n\n", 1)
+            event = _parse_sse(block)
+            if event is not None:
+                yield event
+    last = _parse_sse(buffer)
+    if last is not None:
+        yield last
 
 
 class GlytosError(Exception):
@@ -80,6 +196,11 @@ class Glytos:
             self._headers["X-Environment-Id"] = environment
 
         self.workflows = Workflows(self)
+        #: The same resource as :attr:`workflows`, under the word the product uses.
+        self.agents = self.workflows
+        self.threads = Threads(self)
+        self.folders = Folders(self)
+        self.imports = Imports(self)
         self.calls = Calls(self)
         self.phone_numbers = PhoneNumbers(self)
         self.sessions = Sessions(self)
@@ -108,6 +229,32 @@ class Glytos:
             params=_prepare_params(params),
         )
         return _handle_response(response)
+
+    def request_form(
+        self, method: str, path: str, *, data: dict[str, Any], files: dict[str, Any]
+    ) -> JSON:
+        """Upload a file. Separate from :meth:`request` because the body is multipart,
+        so httpx has to set the Content-Type with its own boundary."""
+        response = self._http.request(
+            method, self._base_url + path, headers=self._headers, data=data, files=files
+        )
+        return _handle_response(response)
+
+    def stream(self, method: str, path: str, *, json: JSON | None = None) -> Iterator[StreamEvent]:
+        """Stream a Server-Sent Events endpoint, yielding one parsed event at a time.
+
+        The reply arrives as it is written rather than after the last token, which
+        is the whole difference on a long answer. The terminal ``done`` event carries
+        the same payload the non-streamed call returns.
+        """
+        headers = {**self._headers, "Accept": "text/event-stream"}
+        with self._http.stream(
+            method, self._base_url + path, headers=headers, json=json
+        ) as response:
+            if not response.is_success:
+                response.read()
+                _handle_response(response)
+            yield from _sse_blocks(response.iter_text())
 
     def close(self) -> None:
         self._http.close()
@@ -206,18 +353,35 @@ class Workflows(_Resource):
         self,
         workflow_uuid: str,
         session_uuid: str,
-        content: str,
+        content: str = "",
         *,
         images: Sequence[str] | None = None,
+        instructions: str | None = None,
     ) -> JSON:
-        body: dict[str, Any] = {"content": content}
-        if images is not None:
-            body["images"] = images
+        """One turn. ``instructions`` is extra context for THIS turn only, applied
+        below the agent's own and never saved to it."""
         return self._client.request(
             "POST",
             f"/workflows/{quote(workflow_uuid, safe='')}"
             f"/sessions/{quote(session_uuid, safe='')}/messages",
-            json=body,
+            json=_turn_body(content, images, instructions),
+        )
+
+    def stream_message(
+        self,
+        workflow_uuid: str,
+        session_uuid: str,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> Iterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        return self._client.stream(
+            "POST",
+            f"/workflows/{quote(workflow_uuid, safe='')}"
+            f"/sessions/{quote(session_uuid, safe='')}/messages/stream",
+            json=_turn_body(content, images, instructions),
         )
 
     def run_text(self, workflow_uuid: str, messages: Sequence[dict[str, Any]]) -> JSON:
@@ -238,6 +402,146 @@ class Workflows(_Resource):
             "GET",
             f"/workflows/{quote(workflow_uuid, safe='')}"
             f"/sessions/{quote(session_uuid, safe='')}/events",
+        )
+
+
+class Threads(_Resource):
+    """Conversations with a text agent, in the vocabulary the rest of the industry
+    uses: a thread holds the conversation, a run is one turn on it.
+
+    The same session API :attr:`Glytos.agents` exposes, shaped so code written
+    against a thread/run model reads the same here.
+    """
+
+    def __init__(self, client: Glytos):
+        super().__init__(client)
+        self.messages = ThreadMessages(client)
+        self.runs = ThreadRuns(client)
+
+    def create(
+        self,
+        *,
+        agent: str,
+        variables: dict[str, Any] | None = None,
+        version: int | str | None = None,
+    ) -> Thread:
+        """Open a conversation with an agent."""
+        body: dict[str, Any] = {}
+        if variables is not None:
+            body["variables"] = variables
+        if version is not None:
+            body["version"] = version
+        started = self._client.request(
+            "POST", f"/workflows/{quote(agent, safe='')}/sessions", json=body
+        )
+        return _as_thread(agent, started)
+
+    def retrieve(self, thread: ThreadRef) -> JSON:
+        """The conversation so far, with its variables and cost."""
+        agent, thread_id = _thread_ids(thread)
+        return self._client.request(
+            "GET",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}",
+        )
+
+
+class ThreadMessages(_Resource):
+    def create(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> JSON:
+        """Add a user message and run the agent on it. Returns that turn's reply."""
+        agent, thread_id = _thread_ids(thread)
+        return self._client.request(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}/messages",
+            json=_turn_body(content, images, instructions),
+        )
+
+    def list(self, thread: ThreadRef) -> JSON:
+        """Every message in the conversation, oldest first."""
+        agent, thread_id = _thread_ids(thread)
+        detail = self._client.request(
+            "GET",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}",
+        )
+        return (detail or {}).get("transcript", [])
+
+
+class ThreadRuns(_Resource):
+    def create(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> JSON:
+        """Run one turn and wait for it. A turn completes before it returns, so there
+        is no run to poll: the reply is already in the result."""
+        agent, thread_id = _thread_ids(thread)
+        return self._client.request(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}/messages",
+            json=_turn_body(content, images, instructions),
+        )
+
+    def stream(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> Iterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        agent, thread_id = _thread_ids(thread)
+        return self._client.stream(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}"
+            f"/sessions/{quote(thread_id, safe='')}/messages/stream",
+            json=_turn_body(content, images, instructions),
+        )
+
+
+class Folders(_Resource):
+    """Folders that group agents inside an environment."""
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/agent-folders")
+
+    def create(self, name: str) -> JSON:
+        return self._client.request("POST", "/agent-folders", json={"name": name})
+
+    def rename(self, folder_uuid: str, name: str) -> JSON:
+        return self._client.request(
+            "PATCH", f"/agent-folders/{quote(folder_uuid, safe='')}", json={"name": name}
+        )
+
+    def delete(self, folder_uuid: str) -> JSON:
+        """Delete a folder. The agents filed in it are deleted with it."""
+        return self._client.request("DELETE", f"/agent-folders/{quote(folder_uuid, safe='')}")
+
+
+class Imports(_Resource):
+    """Bring an agent over from another platform."""
+
+    def sources(self) -> JSON:
+        return self._client.request("GET", "/imports/sources")
+
+    def create(self, source: str, payload: dict[str, Any]) -> JSON:
+        return self._client.request(
+            "POST", f"/imports/{quote(source, safe='')}", json={"payload": payload}
+        )
+
+    def assistant(self, assistant: dict[str, Any]) -> JSON:
+        """Bring over an assistant definition, tools and all."""
+        return self._client.request(
+            "POST", "/imports/openai-assistant", json={"assistant": assistant}
         )
 
 
@@ -477,6 +781,40 @@ class Chat(_Resource):
             body["images"] = images
         return self._client.request("POST", "/chat/messages", json=body)
 
+    def stream(
+        self,
+        *,
+        token: str,
+        content: str,
+        session_uuid: str | None = None,
+        images: Sequence[str] | None = None,
+    ) -> Iterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        body: dict[str, Any] = {"token": token, "content": content}
+        if session_uuid is not None:
+            body["session_uuid"] = session_uuid
+        if images is not None:
+            body["images"] = images
+        return self._client.stream("POST", "/chat/stream", json=body)
+
+    def upload_file(
+        self,
+        *,
+        token: str,
+        session_uuid: str,
+        file: bytes | str,
+        filename: str = "file",
+    ) -> JSON:
+        """Attach a file to one conversation. Its text is put in front of the agent
+        for that conversation only - it does not join the knowledge base."""
+        payload = file.encode() if isinstance(file, str) else file
+        return self._client.request_form(
+            "POST",
+            "/chat/files",
+            data={"token": token, "session_uuid": session_uuid},
+            files={"file": (filename, payload)},
+        )
+
 
 class Tools(_Resource):
     """Reusable tools an agent can call (``kind`` = http / static / mcp)."""
@@ -550,6 +888,13 @@ class KnowledgeBase(_Resource):
             body["chunk_overlap"] = chunk_overlap
         return self._client.request("POST", "/knowledge-base/documents", json=body)
 
+    def upload_document(self, file: bytes | str, filename: str = "document") -> JSON:
+        """Upload a document file (txt, md, pdf) instead of pasting its text."""
+        payload = file.encode() if isinstance(file, str) else file
+        return self._client.request_form(
+            "POST", "/knowledge-base/documents/upload", data={}, files={"file": (filename, payload)}
+        )
+
     def search(
         self,
         *,
@@ -582,6 +927,18 @@ class VectorStores(_Resource):
 
     def delete(self, vector_store_uuid: str) -> JSON:
         return self._client.request("DELETE", f"/vector-stores/{quote(vector_store_uuid, safe='')}")
+
+    def upload_document(
+        self, vector_store_uuid: str, file: bytes | str, filename: str = "document"
+    ) -> JSON:
+        """Add a document file to a vector store, so an agent can search it."""
+        payload = file.encode() if isinstance(file, str) else file
+        return self._client.request_form(
+            "POST",
+            f"/vector-stores/{quote(vector_store_uuid, safe='')}/documents/upload",
+            data={},
+            files={"file": (filename, payload)},
+        )
 
 
 class Analytics(_Resource):
@@ -616,6 +973,11 @@ class AsyncGlytos:
             self._headers["X-Environment-Id"] = environment
 
         self.workflows = AsyncWorkflows(self)
+        #: The same resource as :attr:`workflows`, under the word the product uses.
+        self.agents = self.workflows
+        self.threads = AsyncThreads(self)
+        self.folders = AsyncFolders(self)
+        self.imports = AsyncImports(self)
         self.calls = AsyncCalls(self)
         self.phone_numbers = AsyncPhoneNumbers(self)
         self.sessions = AsyncSessions(self)
@@ -644,6 +1006,44 @@ class AsyncGlytos:
             params=_prepare_params(params),
         )
         return _handle_response(response)
+
+    async def request_form(
+        self, method: str, path: str, *, data: dict[str, Any], files: dict[str, Any]
+    ) -> JSON:
+        """Upload a file. Separate from :meth:`request` because the body is multipart,
+        so httpx has to set the Content-Type with its own boundary."""
+        response = await self._http.request(
+            method, self._base_url + path, headers=self._headers, data=data, files=files
+        )
+        return _handle_response(response)
+
+    async def stream(
+        self, method: str, path: str, *, json: JSON | None = None
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream a Server-Sent Events endpoint, yielding one parsed event at a time.
+
+        The terminal ``done`` event carries the same payload the non-streamed call
+        returns, so a caller can render the deltas and still end up with the
+        authoritative result.
+        """
+        headers = {**self._headers, "Accept": "text/event-stream"}
+        async with self._http.stream(
+            method, self._base_url + path, headers=headers, json=json
+        ) as response:
+            if not response.is_success:
+                await response.aread()
+                _handle_response(response)
+            buffer = ""
+            async for chunk in response.aiter_text():
+                buffer += chunk
+                while _SSE_SEP in buffer:
+                    block, buffer = buffer.split(_SSE_SEP, 1)
+                    event = _parse_sse(block)
+                    if event is not None:
+                        yield event
+            last = _parse_sse(buffer)
+            if last is not None:
+                yield last
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -752,18 +1152,35 @@ class AsyncWorkflows(_AsyncResource):
         self,
         workflow_uuid: str,
         session_uuid: str,
-        content: str,
+        content: str = "",
         *,
         images: Sequence[str] | None = None,
+        instructions: str | None = None,
     ) -> JSON:
-        body: dict[str, Any] = {"content": content}
-        if images is not None:
-            body["images"] = images
+        """One turn. ``instructions`` is extra context for THIS turn only, applied
+        below the agent own instructions and never saved to it."""
         return await self._client.request(
             "POST",
             f"/workflows/{quote(workflow_uuid, safe='')}"
             f"/sessions/{quote(session_uuid, safe='')}/messages",
-            json=body,
+            json=_turn_body(content, images, instructions),
+        )
+
+    def stream_message(
+        self,
+        workflow_uuid: str,
+        session_uuid: str,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        return self._client.stream(
+            "POST",
+            f"/workflows/{quote(workflow_uuid, safe='')}"
+            f"/sessions/{quote(session_uuid, safe='')}/messages/stream",
+            json=_turn_body(content, images, instructions),
         )
 
     async def run_text(self, workflow_uuid: str, messages: Sequence[dict[str, Any]]) -> JSON:
@@ -1017,6 +1434,176 @@ class AsyncChat(_AsyncResource):
             body["images"] = images
         return await self._client.request("POST", "/chat/messages", json=body)
 
+    def stream(
+        self,
+        *,
+        token: str,
+        content: str,
+        session_uuid: str | None = None,
+        images: Sequence[str] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        body: dict[str, Any] = {"token": token, "content": content}
+        if session_uuid is not None:
+            body["session_uuid"] = session_uuid
+        if images is not None:
+            body["images"] = images
+        return self._client.stream("POST", "/chat/stream", json=body)
+
+    async def upload_file(
+        self,
+        *,
+        token: str,
+        session_uuid: str,
+        file: bytes | str,
+        filename: str = "file",
+    ) -> JSON:
+        """Attach a file to one conversation. Its text is put in front of the agent
+        for that conversation only - it does not join the knowledge base."""
+        payload = file.encode() if isinstance(file, str) else file
+        return await self._client.request_form(
+            "POST",
+            "/chat/files",
+            data={"token": token, "session_uuid": session_uuid},
+            files={"file": (filename, payload)},
+        )
+
+
+class AsyncThreads(_AsyncResource):
+    """Conversations with a text agent, in the vocabulary the rest of the industry
+    uses: a thread holds the conversation, a run is one turn on it."""
+
+    def __init__(self, client: AsyncGlytos):
+        super().__init__(client)
+        self.messages = AsyncThreadMessages(client)
+        self.runs = AsyncThreadRuns(client)
+
+    async def create(
+        self,
+        *,
+        agent: str,
+        variables: dict[str, Any] | None = None,
+        version: int | str | None = None,
+    ) -> Thread:
+        """Open a conversation with an agent."""
+        body: dict[str, Any] = {}
+        if variables is not None:
+            body["variables"] = variables
+        if version is not None:
+            body["version"] = version
+        started = await self._client.request(
+            "POST", f"/workflows/{quote(agent, safe='')}/sessions", json=body
+        )
+        return _as_thread(agent, started)
+
+    async def retrieve(self, thread: ThreadRef) -> JSON:
+        """The conversation so far, with its variables and cost."""
+        agent, thread_id = _thread_ids(thread)
+        return await self._client.request(
+            "GET",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}",
+        )
+
+
+class AsyncThreadMessages(_AsyncResource):
+    async def create(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> JSON:
+        """Add a user message and run the agent on it. Returns that turn reply."""
+        agent, thread_id = _thread_ids(thread)
+        return await self._client.request(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}/messages",
+            json=_turn_body(content, images, instructions),
+        )
+
+    async def list(self, thread: ThreadRef) -> JSON:
+        """Every message in the conversation, oldest first."""
+        agent, thread_id = _thread_ids(thread)
+        detail = await self._client.request(
+            "GET",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}",
+        )
+        return (detail or {}).get("transcript", [])
+
+
+class AsyncThreadRuns(_AsyncResource):
+    async def create(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> JSON:
+        """Run one turn and wait for it. A turn completes before it returns, so there
+        is no run to poll: the reply is already in the result."""
+        agent, thread_id = _thread_ids(thread)
+        return await self._client.request(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}/sessions/{quote(thread_id, safe='')}/messages",
+            json=_turn_body(content, images, instructions),
+        )
+
+    def stream(
+        self,
+        thread: ThreadRef,
+        content: str = "",
+        *,
+        images: Sequence[str] | None = None,
+        instructions: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """The same turn, delivered as it is written."""
+        agent, thread_id = _thread_ids(thread)
+        return self._client.stream(
+            "POST",
+            f"/workflows/{quote(agent, safe='')}"
+            f"/sessions/{quote(thread_id, safe='')}/messages/stream",
+            json=_turn_body(content, images, instructions),
+        )
+
+
+class AsyncFolders(_AsyncResource):
+    """Folders that group agents inside an environment."""
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/agent-folders")
+
+    async def create(self, name: str) -> JSON:
+        return await self._client.request("POST", "/agent-folders", json={"name": name})
+
+    async def rename(self, folder_uuid: str, name: str) -> JSON:
+        return await self._client.request(
+            "PATCH", f"/agent-folders/{quote(folder_uuid, safe='')}", json={"name": name}
+        )
+
+    async def delete(self, folder_uuid: str) -> JSON:
+        """Delete a folder. The agents filed in it are deleted with it."""
+        return await self._client.request("DELETE", f"/agent-folders/{quote(folder_uuid, safe='')}")
+
+
+class AsyncImports(_AsyncResource):
+    """Bring an agent over from another platform."""
+
+    async def sources(self) -> JSON:
+        return await self._client.request("GET", "/imports/sources")
+
+    async def create(self, source: str, payload: dict[str, Any]) -> JSON:
+        return await self._client.request(
+            "POST", f"/imports/{quote(source, safe='')}", json={"payload": payload}
+        )
+
+    async def assistant(self, assistant: dict[str, Any]) -> JSON:
+        """Bring over an assistant definition, tools and all."""
+        return await self._client.request(
+            "POST", "/imports/openai-assistant", json={"assistant": assistant}
+        )
+
 
 class AsyncTools(_AsyncResource):
     """Reusable tools an agent can call (``kind`` = http / static / mcp)."""
@@ -1090,6 +1677,13 @@ class AsyncKnowledgeBase(_AsyncResource):
             body["chunk_overlap"] = chunk_overlap
         return await self._client.request("POST", "/knowledge-base/documents", json=body)
 
+    async def upload_document(self, file: bytes | str, filename: str = "document") -> JSON:
+        """Upload a document file (txt, md, pdf) instead of pasting its text."""
+        payload = file.encode() if isinstance(file, str) else file
+        return await self._client.request_form(
+            "POST", "/knowledge-base/documents/upload", data={}, files={"file": (filename, payload)}
+        )
+
     async def search(
         self,
         *,
@@ -1125,6 +1719,18 @@ class AsyncVectorStores(_AsyncResource):
     async def delete(self, vector_store_uuid: str) -> JSON:
         return await self._client.request(
             "DELETE", f"/vector-stores/{quote(vector_store_uuid, safe='')}"
+        )
+
+    async def upload_document(
+        self, vector_store_uuid: str, file: bytes | str, filename: str = "document"
+    ) -> JSON:
+        """Add a document file to a vector store, so an agent can search it."""
+        payload = file.encode() if isinstance(file, str) else file
+        return await self._client.request_form(
+            "POST",
+            f"/vector-stores/{quote(vector_store_uuid, safe='')}/documents/upload",
+            data={},
+            files={"file": (filename, payload)},
         )
 
 

@@ -41,6 +41,40 @@ with Glytos(api_key="gly_...") as glytos:
     overview = glytos.request("GET", "/analytics/overview")
 ```
 
+### Text conversations
+
+An agent is one definition; nothing forces it to do both text and voice. For text,
+a thread holds the conversation and a run is one turn on it:
+
+```python
+thread = glytos.threads.create(agent=agent_uuid)
+run = glytos.threads.runs.create(thread, "What are your opening hours?")
+print(run["messages"][-1]["content"])
+```
+
+Stream a long answer instead of waiting for it:
+
+```python
+for event in glytos.threads.runs.stream(thread, "Summarise the policy"):
+    if event.type == "token":
+        print(event.delta, end="", flush=True)
+    elif event.type == "done":
+        print()
+```
+
+Extra context for one turn only, applied below the agent's own instructions and
+never saved to it:
+
+```python
+glytos.threads.runs.create(
+    thread,
+    "Rate this transcript",
+    instructions="Score 1-5 and reply as JSON.",
+)
+```
+
+Everything above has an async twin on `AsyncGlytos` (`async for` over the stream).
+
 ## Resources
 
 | Namespace | Methods |
