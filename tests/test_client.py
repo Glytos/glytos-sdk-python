@@ -1,8 +1,10 @@
 import asyncio
 import json
+import pathlib
 
 import httpx
 import pytest
+import tomllib
 
 from glytos import AsyncGlytos, Glytos, GlytosError
 
@@ -10,6 +12,16 @@ from glytos import AsyncGlytos, Glytos, GlytosError
 def make_client(handler, environment=None):  # type: ignore[no-untyped-def]
     http = httpx.Client(transport=httpx.MockTransport(handler))
     return Glytos(api_key="gly_test", environment=environment, http_client=http)
+
+
+def test_version_matches_the_manifest() -> None:
+    # The release bump edits only pyproject.toml, so a hardcoded __version__ would
+    # ship the previous release's number forever. It did once.
+    import glytos
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(root.read_text(encoding="utf-8"))["project"]["version"]
+    assert glytos.__version__ == declared
 
 
 def test_requires_an_api_key() -> None:
