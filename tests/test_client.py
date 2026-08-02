@@ -1,10 +1,10 @@
 import asyncio
 import json
 import pathlib
+import re
 
 import httpx
 import pytest
-import tomllib
 
 from glytos import AsyncGlytos, Glytos, GlytosError
 
@@ -19,9 +19,12 @@ def test_version_matches_the_manifest() -> None:
     # ship the previous release's number forever. It did once.
     import glytos
 
+    # Parsed with a regex, not tomllib: that is stdlib only from 3.11 and this
+    # package supports 3.9.
     root = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
-    declared = tomllib.loads(root.read_text(encoding="utf-8"))["project"]["version"]
-    assert glytos.__version__ == declared
+    match = re.search(r'^version = "([^"]+)"', root.read_text(encoding="utf-8"), re.M)
+    assert match is not None
+    assert glytos.__version__ == match.group(1)
 
 
 def test_requires_an_api_key() -> None:
