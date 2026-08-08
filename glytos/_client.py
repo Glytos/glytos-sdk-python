@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Union
 from urllib.parse import quote
 
@@ -206,6 +207,7 @@ class Glytos:
         self.sessions = Sessions(self)
         self.webhooks = Webhooks(self)
         self.campaigns = Campaigns(self)
+        self.dnc = Dnc(self)
         self.chat = Chat(self)
         self.tools = Tools(self)
         self.knowledge_base = KnowledgeBase(self)
@@ -655,6 +657,46 @@ class PhoneNumbers(_Resource):
         return self._client.request("DELETE", f"/telephony/numbers/{quote(number_uuid, safe='')}")
 
 
+def _campaign_body(
+    name: str,
+    workflow_uuid: str,
+    from_number: str,
+    contacts: Sequence[str] | None,
+    contacts_csv: str | None,
+    scheduled_at: str | datetime | None,
+    call_window_start: str | None,
+    call_window_end: str | None,
+    timezone: str | None,
+    suppression_policy: str | None,
+    override_caller_requests: bool | None,
+) -> dict[str, Any]:
+    """Build a campaign payload, omitting everything the caller left alone."""
+    body: dict[str, Any] = {
+        "name": name,
+        "workflow_uuid": workflow_uuid,
+        "from_number": from_number,
+    }
+    if contacts is not None:
+        body["contacts"] = list(contacts)
+    if contacts_csv is not None:
+        body["contacts_csv"] = contacts_csv
+    if scheduled_at is not None:
+        body["scheduled_at"] = (
+            scheduled_at.isoformat() if isinstance(scheduled_at, datetime) else scheduled_at
+        )
+    if call_window_start is not None:
+        body["call_window_start"] = call_window_start
+    if call_window_end is not None:
+        body["call_window_end"] = call_window_end
+    if timezone is not None:
+        body["timezone"] = timezone
+    if suppression_policy is not None:
+        body["suppression_policy"] = suppression_policy
+    if override_caller_requests is not None:
+        body["override_caller_requests"] = override_caller_requests
+    return body
+
+
 class Campaigns(_Resource):
     """Outbound calling campaigns over a phone number."""
 
@@ -667,31 +709,158 @@ class Campaigns(_Resource):
         name: str,
         workflow_uuid: str,
         from_number: str,
-        contacts: Sequence[dict[str, Any]] | None = None,
+        contacts: Sequence[str] | None = None,
+        contacts_csv: str | None = None,
+        scheduled_at: str | datetime | None = None,
+        call_window_start: str | None = None,
+        call_window_end: str | None = None,
+        timezone: str | None = None,
+        suppression_policy: str | None = None,
+        override_caller_requests: bool | None = None,
     ) -> JSON:
-        body: dict[str, Any] = {
-            "name": name,
-            "workflow_uuid": workflow_uuid,
-            "from_number": from_number,
-        }
-        if contacts is not None:
-            body["contacts"] = contacts
+        """Create an outbound calling campaign.
+
+        ``from_number`` must be a number your organization has connected, or the
+        campaign is refused. ``contacts`` takes numbers in any spelling; they are
+        converted to international form and deduplicated. ``contacts_csv`` takes
+        the contents of a CSV file instead, and every column beside the phone
+        number travels with that contact's call as a variable, so ``{{name}}`` in
+        the agent's prompt means the person being called.
+
+        Left unscheduled, a campaign is a draft until :meth:`start`. Set
+        ``call_window_start`` and ``call_window_end`` together to bound dialing
+        to a range of hours, read in ``timezone`` (an IANA name).
+        """
+        body = _campaign_body(
+            name,
+            workflow_uuid,
+            from_number,
+            contacts,
+            contacts_csv,
+            scheduled_at,
+            call_window_start,
+            call_window_end,
+            timezone,
+            suppression_policy,
+            override_caller_requests,
+        )
         return self._client.request("POST", "/telephony/campaigns", json=body)
 
     def retrieve(self, campaign_uuid: str) -> JSON:
+        """A campaign with its contacts and their outcomes."""
         return self._client.request("GET", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}")
 
     def start(self, campaign_uuid: str) -> JSON:
+        """Begin dialing, from the contacts that have not been called yet."""
         return self._client.request(
             "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/start"
         )
 
+    def stop(self, campaign_uuid: str) -> JSON:
+        """End dialing at the next contact.
+
+        Calls already handed to the carrier run to their end; undialed contacts
+        stay ready, so :meth:`start` resumes.
+        """
+        return self._client.request(
+            "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/stop"
+        )
+
+    def delete(self, campaign_uuid: str) -> JSON:
+        """Remove a campaign and its contact list, stopping it first if running."""
+        return self._client.request(
+            "DELETE", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}"
+        )
+
+    def add_contacts(self, campaign_uuid: str, contacts_csv: str) -> JSON:
+        """Append contacts from the contents of a CSV file."""
+        return self._client.request(
+            "POST",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/contacts/sync",
+            json={"contacts_csv": contacts_csv},
+        )
+
     def sync_contacts(self, campaign_uuid: str, source_url: str) -> JSON:
+        """Append contacts from a CSV your own system serves over HTTP."""
         return self._client.request(
             "POST",
             f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/contacts/sync",
             json={"source_url": source_url},
         )
+
+    def preview_suppression(
+        self,
+        *,
+        contacts: Sequence[str] | None = None,
+        contacts_csv: str | None = None,
+    ) -> JSON:
+        """How many of a contact list each suppression policy would reach.
+
+        Includes how many of those people asked, on a call, not to be contacted
+        again. Measure before choosing anything other than the default.
+        """
+        body: dict[str, Any] = {}
+        if contacts is not None:
+            body["contacts"] = list(contacts)
+        if contacts_csv is not None:
+            body["contacts_csv"] = contacts_csv
+        return self._client.request("POST", "/telephony/campaigns/suppression-preview", json=body)
+
+
+class Dnc(_Resource):
+    """The numbers your organization must not call.
+
+    Every outbound call is checked against this list, whether it comes from a
+    campaign or from :meth:`Calls.create`. Agents add to it themselves when a
+    caller asks not to be contacted again.
+    """
+
+    def list(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> JSON:
+        """Suppressed numbers, newest first.
+
+        ``search`` is normalized before matching, so a number typed the way it
+        appears on a contact list finds the entry stored in international form.
+        """
+        params: dict[str, Any] = {}
+        if search is not None:
+            params["search"] = search
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._client.request("GET", "/dnc", params=params)
+
+    def add(self, phone: str, *, reason: str | None = None) -> JSON:
+        """Suppress a number.
+
+        Any spelling is accepted and stored in international form. Adding one
+        already on the list returns the existing entry rather than failing.
+        """
+        return self._client.request("POST", "/dnc", json={"phone": phone, "reason": reason})
+
+    def import_(self, phones: Sequence[str], *, reason: str | None = None) -> JSON:
+        """Suppress many numbers at once, e.g. a list exported from your CRM."""
+        return self._client.request(
+            "POST", "/dnc/import", json={"phones": list(phones), "reason": reason}
+        )
+
+    def set_scope(self, phone: str, scope: str) -> JSON:
+        """Change how far a suppression reaches.
+
+        ``all`` covers every call; ``marketing`` still allows a transactional
+        call about the person's own order.
+        """
+        return self._client.request("PATCH", f"/dnc/{quote(phone, safe='')}", json={"scope": scope})
+
+    def remove(self, phone: str) -> JSON:
+        """Take a number off the list, so it can be called again."""
+        return self._client.request("DELETE", f"/dnc/{quote(phone, safe='')}")
 
 
 class Sessions(_Resource):
@@ -1005,6 +1174,7 @@ class AsyncGlytos:
         self.sessions = AsyncSessions(self)
         self.webhooks = AsyncWebhooks(self)
         self.campaigns = AsyncCampaigns(self)
+        self.dnc = AsyncDnc(self)
         self.chat = AsyncChat(self)
         self.tools = AsyncTools(self)
         self.knowledge_base = AsyncKnowledgeBase(self)
@@ -1340,33 +1510,164 @@ class AsyncCampaigns(_AsyncResource):
         name: str,
         workflow_uuid: str,
         from_number: str,
-        contacts: Sequence[dict[str, Any]] | None = None,
+        contacts: Sequence[str] | None = None,
+        contacts_csv: str | None = None,
+        scheduled_at: str | datetime | None = None,
+        call_window_start: str | None = None,
+        call_window_end: str | None = None,
+        timezone: str | None = None,
+        suppression_policy: str | None = None,
+        override_caller_requests: bool | None = None,
     ) -> JSON:
-        body: dict[str, Any] = {
-            "name": name,
-            "workflow_uuid": workflow_uuid,
-            "from_number": from_number,
-        }
-        if contacts is not None:
-            body["contacts"] = contacts
+        """Create an outbound calling campaign.
+
+        ``from_number`` must be a number your organization has connected, or the
+        campaign is refused. ``contacts`` takes numbers in any spelling; they are
+        converted to international form and deduplicated. ``contacts_csv`` takes
+        the contents of a CSV file instead, and every column beside the phone
+        number travels with that contact's call as a variable, so ``{{name}}`` in
+        the agent's prompt means the person being called.
+
+        Left unscheduled, a campaign is a draft until :meth:`start`. Set
+        ``call_window_start`` and ``call_window_end`` together to bound dialing
+        to a range of hours, read in ``timezone`` (an IANA name).
+        """
+        body = _campaign_body(
+            name,
+            workflow_uuid,
+            from_number,
+            contacts,
+            contacts_csv,
+            scheduled_at,
+            call_window_start,
+            call_window_end,
+            timezone,
+            suppression_policy,
+            override_caller_requests,
+        )
         return await self._client.request("POST", "/telephony/campaigns", json=body)
 
     async def retrieve(self, campaign_uuid: str) -> JSON:
+        """A campaign with its contacts and their outcomes."""
         return await self._client.request(
             "GET", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}"
         )
 
     async def start(self, campaign_uuid: str) -> JSON:
+        """Begin dialing, from the contacts that have not been called yet."""
         return await self._client.request(
             "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/start"
         )
 
+    async def stop(self, campaign_uuid: str) -> JSON:
+        """End dialing at the next contact.
+
+        Calls already handed to the carrier run to their end; undialed contacts
+        stay ready, so :meth:`start` resumes.
+        """
+        return await self._client.request(
+            "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/stop"
+        )
+
+    async def delete(self, campaign_uuid: str) -> JSON:
+        """Remove a campaign and its contact list, stopping it first if running."""
+        return await self._client.request(
+            "DELETE", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}"
+        )
+
+    async def add_contacts(self, campaign_uuid: str, contacts_csv: str) -> JSON:
+        """Append contacts from the contents of a CSV file."""
+        return await self._client.request(
+            "POST",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/contacts/sync",
+            json={"contacts_csv": contacts_csv},
+        )
+
     async def sync_contacts(self, campaign_uuid: str, source_url: str) -> JSON:
+        """Append contacts from a CSV your own system serves over HTTP."""
         return await self._client.request(
             "POST",
             f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/contacts/sync",
             json={"source_url": source_url},
         )
+
+    async def preview_suppression(
+        self,
+        *,
+        contacts: Sequence[str] | None = None,
+        contacts_csv: str | None = None,
+    ) -> JSON:
+        """How many of a contact list each suppression policy would reach.
+
+        Includes how many of those people asked, on a call, not to be contacted
+        again. Measure before choosing anything other than the default.
+        """
+        body: dict[str, Any] = {}
+        if contacts is not None:
+            body["contacts"] = list(contacts)
+        if contacts_csv is not None:
+            body["contacts_csv"] = contacts_csv
+        return await self._client.request(
+            "POST", "/telephony/campaigns/suppression-preview", json=body
+        )
+
+
+class AsyncDnc(_AsyncResource):
+    """The numbers your organization must not call.
+
+    Every outbound call is checked against this list, whether it comes from a
+    campaign or from :meth:`AsyncCalls.create`. Agents add to it themselves when
+    a caller asks not to be contacted again.
+    """
+
+    async def list(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> JSON:
+        """Suppressed numbers, newest first.
+
+        ``search`` is normalized before matching, so a number typed the way it
+        appears on a contact list finds the entry stored in international form.
+        """
+        params: dict[str, Any] = {}
+        if search is not None:
+            params["search"] = search
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return await self._client.request("GET", "/dnc", params=params)
+
+    async def add(self, phone: str, *, reason: str | None = None) -> JSON:
+        """Suppress a number.
+
+        Any spelling is accepted and stored in international form. Adding one
+        already on the list returns the existing entry rather than failing.
+        """
+        return await self._client.request("POST", "/dnc", json={"phone": phone, "reason": reason})
+
+    async def import_(self, phones: Sequence[str], *, reason: str | None = None) -> JSON:
+        """Suppress many numbers at once, e.g. a list exported from your CRM."""
+        return await self._client.request(
+            "POST", "/dnc/import", json={"phones": list(phones), "reason": reason}
+        )
+
+    async def set_scope(self, phone: str, scope: str) -> JSON:
+        """Change how far a suppression reaches.
+
+        ``all`` covers every call; ``marketing`` still allows a transactional
+        call about the person's own order.
+        """
+        return await self._client.request(
+            "PATCH", f"/dnc/{quote(phone, safe='')}", json={"scope": scope}
+        )
+
+    async def remove(self, phone: str) -> JSON:
+        """Take a number off the list, so it can be called again."""
+        return await self._client.request("DELETE", f"/dnc/{quote(phone, safe='')}")
 
 
 class AsyncSessions(_AsyncResource):
