@@ -181,6 +181,19 @@ def test_dnc_scope_and_removal_carry_the_phone_number() -> None:
     assert captured["request"].url.raw_path.endswith(b"/dnc/%2B15551230001")
 
 
+def test_dnc_omits_an_unstated_reason_rather_than_sending_null() -> None:
+    # The reason is a plain string server-side, not a nullable one, so a null
+    # is a 422 rather than "no reason given".
+    captured, handler = capturing(201, {"uuid": "d1"})
+    client = make_client(handler)
+
+    client.dnc.add("+15551230001")
+    assert json.loads(captured["request"].content) == {"phone": "+15551230001"}
+
+    client.dnc.import_(["+15551230001"])
+    assert json.loads(captured["request"].content) == {"phones": ["+15551230001"]}
+
+
 def test_dnc_import_reports_what_it_did() -> None:
     captured, handler = capturing(200, {"added": 8, "duplicates": 1, "rejected": 2})
     client = make_client(handler)

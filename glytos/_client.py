@@ -842,13 +842,19 @@ class Dnc(_Resource):
         Any spelling is accepted and stored in international form. Adding one
         already on the list returns the existing entry rather than failing.
         """
-        return self._client.request("POST", "/dnc", json={"phone": phone, "reason": reason})
+        # The reason is a plain string server-side, not a nullable one, so an
+        # omitted reason is left out rather than sent as null.
+        body: dict[str, Any] = {"phone": phone}
+        if reason is not None:
+            body["reason"] = reason
+        return self._client.request("POST", "/dnc", json=body)
 
     def import_(self, phones: Sequence[str], *, reason: str | None = None) -> JSON:
         """Suppress many numbers at once, e.g. a list exported from your CRM."""
-        return self._client.request(
-            "POST", "/dnc/import", json={"phones": list(phones), "reason": reason}
-        )
+        body: dict[str, Any] = {"phones": list(phones)}
+        if reason is not None:
+            body["reason"] = reason
+        return self._client.request("POST", "/dnc/import", json=body)
 
     def set_scope(self, phone: str, scope: str) -> JSON:
         """Change how far a suppression reaches.
@@ -1647,13 +1653,19 @@ class AsyncDnc(_AsyncResource):
         Any spelling is accepted and stored in international form. Adding one
         already on the list returns the existing entry rather than failing.
         """
-        return await self._client.request("POST", "/dnc", json={"phone": phone, "reason": reason})
+        # The reason is a plain string server-side, not a nullable one, so an
+        # omitted reason is left out rather than sent as null.
+        body: dict[str, Any] = {"phone": phone}
+        if reason is not None:
+            body["reason"] = reason
+        return await self._client.request("POST", "/dnc", json=body)
 
     async def import_(self, phones: Sequence[str], *, reason: str | None = None) -> JSON:
         """Suppress many numbers at once, e.g. a list exported from your CRM."""
-        return await self._client.request(
-            "POST", "/dnc/import", json={"phones": list(phones), "reason": reason}
-        )
+        body: dict[str, Any] = {"phones": list(phones)}
+        if reason is not None:
+            body["reason"] = reason
+        return await self._client.request("POST", "/dnc/import", json=body)
 
     async def set_scope(self, phone: str, scope: str) -> JSON:
         """Change how far a suppression reaches.
