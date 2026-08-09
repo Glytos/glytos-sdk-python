@@ -18,6 +18,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The tag only triggers this workflow; the version comes from
+      # pyproject.toml. Forgetting to bump it builds a version PyPI already has,
+      # which fails late and confusingly. Fail here instead.
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error file=pyproject.toml::version is $actual but the tag is $expected"
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
