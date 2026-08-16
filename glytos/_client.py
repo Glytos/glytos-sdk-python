@@ -204,6 +204,7 @@ class Glytos:
         self.imports = Imports(self)
         self.calls = Calls(self)
         self.phone_numbers = PhoneNumbers(self)
+        self.sip_trunks = SipTrunks(self)
         self.sessions = Sessions(self)
         self.webhooks = Webhooks(self)
         self.campaigns = Campaigns(self)
@@ -213,6 +214,14 @@ class Glytos:
         self.knowledge_base = KnowledgeBase(self)
         self.vector_stores = VectorStores(self)
         self.analytics = Analytics(self)
+        self.test_suites = TestSuites(self)
+        self.integrations = Integrations(self)
+        self.automations = Automations(self)
+        self.billing = Billing(self)
+        self.environments = Environments(self)
+        self.providers = Providers(self)
+        self.api_keys = ApiKeys(self)
+        self.organizations = Organizations(self)
 
     def request(
         self,
@@ -285,9 +294,22 @@ class Workflows(_Resource):
         return self._client.request("GET", f"/workflows/{quote(workflow_uuid, safe='')}")
 
     def create(
-        self, *, name: str, mode: str = "prompt", config: dict[str, Any] | None = None
+        self,
+        *,
+        name: str,
+        mode: str = "prompt",
+        primary_channel: str | None = None,
+        config: dict[str, Any] | None = None,
     ) -> JSON:
+        """Create an agent.
+
+        ``mode`` is ``prompt`` or ``workflow``; ``primary_channel`` is ``voice``
+        or ``chat``. A new agent always lands in Development, whatever environment
+        the client is scoped to, so nothing is built straight into production.
+        """
         body: dict[str, Any] = {"name": name, "mode": mode}
+        if primary_channel is not None:
+            body["primary_channel"] = primary_channel
         if config is not None:
             body["config"] = config
         return self._client.request("POST", "/workflows", json=body)
@@ -562,6 +584,23 @@ class Imports(_Resource):
             "POST", f"/imports/{quote(source, safe='')}", json={"payload": payload}
         )
 
+    def connect(self, source: str, *, api_key: str) -> JSON:
+        """List what is on the other platform, using its API key.
+
+        The key is used for this request and is never stored.
+        """
+        return self._client.request(
+            "POST", f"/imports/{quote(source, safe='')}/connect", json={"api_key": api_key}
+        )
+
+    def pull(self, source: str, *, api_key: str, agent_ids: Sequence[str]) -> JSON:
+        """Bring over the agents you picked from :meth:`connect`."""
+        return self._client.request(
+            "POST",
+            f"/imports/{quote(source, safe='')}/pull",
+            json={"api_key": api_key, "agent_ids": list(agent_ids)},
+        )
+
     def assistant(self, assistant: dict[str, Any]) -> JSON:
         """Bring over an assistant definition, tools and all."""
         return self._client.request(
@@ -629,7 +668,15 @@ class PhoneNumbers(_Resource):
         provider_sid: str | None = None,
         credentials: dict[str, Any] | None = None,
         workflow_uuid: str | None = None,
+        sip_trunk_uuid: str | None = None,
     ) -> JSON:
+        """Connect a number you already own at a carrier.
+
+        Importing verifies ownership, so the organization's own carrier
+        credentials are required. Pass ``sip_trunk_uuid`` instead when the number
+        arrives over a SIP trunk you registered: there is no carrier account to
+        look it up in, and the trunk's registration is the ownership proof.
+        """
         body: dict[str, Any] = {"e164": e164}
         if provider is not None:
             body["provider"] = provider
@@ -639,6 +686,8 @@ class PhoneNumbers(_Resource):
             body["credentials"] = credentials
         if workflow_uuid is not None:
             body["workflow_uuid"] = workflow_uuid
+        if sip_trunk_uuid is not None:
+            body["sip_trunk_uuid"] = sip_trunk_uuid
         return self._client.request("POST", "/telephony/numbers/import", json=body)
 
     def instant(self, *, country: str | None = None, provider: str | None = None) -> JSON:
@@ -1014,10 +1063,31 @@ class Chat(_Resource):
 
 
 class Tools(_Resource):
-    """Reusable tools an agent can call (``kind`` = http / static / mcp)."""
+    """Reusable tools an agent can call.
+
+    ``kind`` is one of ``static``, ``http``, ``mcp``, ``code``, ``integration``
+    or ``client``. An ``integration`` tool names its connection in ``config``, so
+    the model fills in arguments but never chooses the destination. ``code`` runs
+    only in an operator-configured sandbox, and ``client`` is resolved by the
+    browser during a web call.
+    """
 
     def list(self) -> JSON:
         return self._client.request("GET", "/tools")
+
+    def discover_mcp(self, *, server_url: str, headers: dict[str, str] | None = None) -> JSON:
+        """Ask an MCP server what it publishes, rather than transcribing its schema.
+
+        Returns the tool list itself, not the response envelope.
+        """
+        body: dict[str, Any] = {"server_url": server_url}
+        if headers is not None:
+            body["headers"] = headers
+        result = self._client.request("POST", "/tools/mcp/discover", json=body)
+        if isinstance(result, dict):
+            tools = result.get("tools")
+            return tools if isinstance(tools, list) else []
+        return []
 
     def create(
         self,
@@ -1069,6 +1139,18 @@ class KnowledgeBase(_Resource):
 
     def list_documents(self) -> JSON:
         return self._client.request("GET", "/knowledge-base/documents")
+
+    def retrieve_document(self, document_id: int | str) -> JSON:
+        """One document, including its extracted text."""
+        return self._client.request(
+            "GET", f"/knowledge-base/documents/{quote(str(document_id), safe='')}"
+        )
+
+    def delete_document(self, document_id: int | str) -> JSON:
+        """Delete a document, with its chunks and embeddings."""
+        return self._client.request(
+            "DELETE", f"/knowledge-base/documents/{quote(str(document_id), safe='')}"
+        )
 
     def create_document(
         self,
@@ -1145,6 +1227,320 @@ class Analytics(_Resource):
         return self._client.request("GET", "/analytics/overview", params={"days": days})
 
 
+class SipTrunks(_Resource):
+    """BYO SIP trunks: connect a carrier directly, with nothing in between.
+
+    A trunk registers with the carrier using credentials it issued you. Numbers
+    are attached to a registered trunk through
+    :meth:`PhoneNumbers.import_number`.
+    """
+
+    def presets(self) -> JSON:
+        """Carriers whose settings are known, so you supply only the login."""
+        return self._client.request("GET", "/telephony/sip-trunks/presets")
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/telephony/sip-trunks")
+
+    def create(self, *, username: str, password: str, **body: Any) -> JSON:
+        """Register a trunk.
+
+        Give a ``preset`` and the server, port and transport are filled in;
+        otherwise set them yourself. The password is stored encrypted and is
+        never returned.
+        """
+        return self._client.request(
+            "POST",
+            "/telephony/sip-trunks",
+            json={"username": username, "password": password, **body},
+        )
+
+    def update(self, trunk_uuid: str, **body: Any) -> JSON:
+        return self._client.request(
+            "PATCH", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}", json=body
+        )
+
+    def delete(self, trunk_uuid: str) -> JSON:
+        return self._client.request("DELETE", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}")
+
+    def test(self, trunk_uuid: str) -> JSON:
+        """Re-check the trunk now, rather than waiting for the next reconcile.
+
+        ``reachable`` separates "the carrier refused these credentials" from
+        "nobody answered"; only the first is worth changing the password over.
+        """
+        return self._client.request(
+            "POST", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}/test"
+        )
+
+
+class TestSuites(_Resource):
+    """Saved conversations replayed against an agent, to catch regressions."""
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/test-suites")
+
+    def create(
+        self, *, workflow_uuid: str, name: str, cases: Sequence[dict[str, Any]] | None = None
+    ) -> JSON:
+        body: dict[str, Any] = {"workflow_uuid": workflow_uuid, "name": name}
+        if cases is not None:
+            body["cases"] = list(cases)
+        return self._client.request("POST", "/test-suites", json=body)
+
+    def delete(self, suite_uuid: str) -> JSON:
+        return self._client.request("DELETE", f"/test-suites/{quote(suite_uuid, safe='')}")
+
+    def run(self, suite_uuid: str) -> JSON:
+        """Run every case. This runs the agent, so it spends credit."""
+        return self._client.request("POST", f"/test-suites/{quote(suite_uuid, safe='')}/run")
+
+
+class IntegrationConnections(_Resource):
+    """The configured destinations behind an integration."""
+
+    def list(self, *, integration_key: str | None = None) -> JSON:
+        return self._client.request(
+            "GET", "/integrations/connections", params={"integration_key": integration_key}
+        )
+
+    def create(self, *, integration_key: str, name: str, data: dict[str, Any]) -> JSON:
+        """Configure a destination.
+
+        ``data`` carries the integration's required credentials (see
+        :meth:`Integrations.list`); they are encrypted at rest and masked on read.
+        """
+        return self._client.request(
+            "POST",
+            "/integrations/connections",
+            json={"integration_key": integration_key, "name": name, "data": data},
+        )
+
+    def update(
+        self,
+        connection_uuid: str,
+        *,
+        name: str | None = None,
+        data: dict[str, Any] | None = None,
+        is_active: bool | None = None,
+    ) -> JSON:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if data is not None:
+            body["data"] = data
+        if is_active is not None:
+            body["is_active"] = is_active
+        return self._client.request(
+            "PATCH", f"/integrations/connections/{quote(connection_uuid, safe='')}", json=body
+        )
+
+    def delete(self, connection_uuid: str) -> JSON:
+        return self._client.request(
+            "DELETE", f"/integrations/connections/{quote(connection_uuid, safe='')}"
+        )
+
+    def run(
+        self, connection_uuid: str, *, action: str, params: dict[str, Any] | None = None
+    ) -> JSON:
+        return self._client.request(
+            "POST",
+            f"/integrations/connections/{quote(connection_uuid, safe='')}/run",
+            json={"action": action, "params": params or {}},
+        )
+
+
+class Integrations(_Resource):
+    """Third-party destinations, and the connections holding their credentials.
+
+    A connection is reachable three ways: run it directly from here, give an agent
+    an ``integration`` tool that names it, or fire it from an automation.
+    """
+
+    def __init__(self, client: Glytos):
+        super().__init__(client)
+        self.connections = IntegrationConnections(client)
+
+    def list(self) -> JSON:
+        """The catalog: what can be connected, and the actions each one offers."""
+        return self._client.request("GET", "/integrations")
+
+    def run(
+        self, integration_key: str, *, action: str, params: dict[str, Any] | None = None
+    ) -> JSON:
+        """Run an action on whatever credentials the organization saved for this
+        integration key.
+
+        Prefer :meth:`IntegrationConnections.run`: this is ambiguous once there is
+        more than one destination for the same integration.
+        """
+        return self._client.request(
+            "POST",
+            f"/integrations/{quote(integration_key, safe='')}/run",
+            json={"action": action, "params": params or {}},
+        )
+
+
+class Automations(_Resource):
+    """When this happens, do that: an event fires an integration action.
+
+    Automations run in the background after the event, never during a call, and a
+    failure is recorded rather than allowed to affect the conversation.
+    """
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/automations")
+
+    def create(
+        self,
+        *,
+        name: str,
+        trigger_event: str,
+        connection_uuid: str,
+        action: str,
+        payload_template: dict[str, Any] | None = None,
+        conditions: dict[str, Any] | None = None,
+    ) -> JSON:
+        """Create a rule.
+
+        ``trigger_event`` is a webhook event type (see :meth:`Webhooks.events`),
+        and ``payload_template`` values may reference the event with
+        ``{{placeholders}}``.
+        """
+        body: dict[str, Any] = {
+            "name": name,
+            "trigger_event": trigger_event,
+            "connection_uuid": connection_uuid,
+            "action": action,
+        }
+        if payload_template is not None:
+            body["payload_template"] = payload_template
+        if conditions is not None:
+            body["conditions"] = conditions
+        return self._client.request("POST", "/automations", json=body)
+
+    def update(self, automation_uuid: str, **body: Any) -> JSON:
+        """Update an automation, including pausing it with ``is_active=False``."""
+        return self._client.request(
+            "PATCH", f"/automations/{quote(automation_uuid, safe='')}", json=body
+        )
+
+    def delete(self, automation_uuid: str) -> JSON:
+        return self._client.request("DELETE", f"/automations/{quote(automation_uuid, safe='')}")
+
+    def runs(self, automation_uuid: str, *, limit: int | None = None) -> JSON:
+        """Recent firings, newest first: what ran, and what came back."""
+        return self._client.request(
+            "GET", f"/automations/{quote(automation_uuid, safe='')}/runs", params={"limit": limit}
+        )
+
+    def test(self, automation_uuid: str, *, payload: dict[str, Any] | None = None) -> JSON:
+        """Fire it once against a payload you supply.
+
+        Shows the rendered parameters and the destination's reply, so it can be
+        checked before a real event is trusted to it.
+        """
+        return self._client.request(
+            "POST",
+            f"/automations/{quote(automation_uuid, safe='')}/test",
+            json={"payload": payload or {}},
+        )
+
+
+class Billing(_Resource):
+    """Credit balance, ledger and usage."""
+
+    def credits(self) -> JSON:
+        """The current prepaid balance. Check it before a large outbound run."""
+        return self._client.request("GET", "/billing/credits")
+
+    def transactions(self, *, kind: str | None = None, limit: int | None = None) -> JSON:
+        """The credit ledger: top-ups and debits, newest first."""
+        return self._client.request(
+            "GET", "/billing/credits/transactions", params={"kind": kind, "limit": limit}
+        )
+
+    def usage(self) -> JSON:
+        return self._client.request("GET", "/billing/usage")
+
+
+class Environments(_Resource):
+    """Development, Staging and Production.
+
+    Pass a ``kind`` or a uuid as the client's ``environment`` to scope reads and
+    calls; agents are created in Development whatever it is set to.
+    """
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/environments")
+
+
+class Providers(_Resource):
+    """The model, transcriber and voice catalog."""
+
+    def list(self) -> JSON:
+        """Every provider and model, and whether it is available to you."""
+        return self._client.request("GET", "/providers")
+
+    def resources(self, service_type: str, key: str, *, language: str | None = None) -> JSON:
+        """One provider's live models and voices, where it publishes them."""
+        return self._client.request(
+            "GET",
+            f"/providers/{quote(service_type, safe='')}/{quote(key, safe='')}/resources",
+            params={"language": language},
+        )
+
+
+class ApiKeys(_Resource):
+    """Keys for calling this API."""
+
+    def list(self) -> JSON:
+        return self._client.request("GET", "/api-keys")
+
+    def create(
+        self,
+        *,
+        name: str,
+        expires_in_days: int | None = None,
+        scopes: Sequence[str] | None = None,
+    ) -> JSON:
+        """Create a key. The secret is in the response and nowhere else.
+
+        ``scopes`` bounds what the key may do and cannot exceed what you hold.
+        Omit it and the key inherits your permissions, which means it stops
+        working if you leave the organization.
+        """
+        body: dict[str, Any] = {"name": name}
+        if expires_in_days is not None:
+            body["expires_in_days"] = expires_in_days
+        if scopes is not None:
+            body["scopes"] = list(scopes)
+        return self._client.request("POST", "/api-keys", json=body)
+
+    def delete(self, key_id: int | str) -> JSON:
+        return self._client.request("DELETE", f"/api-keys/{quote(str(key_id), safe='')}")
+
+
+class Organizations(_Resource):
+    """The organization this key belongs to, and the available regions."""
+
+    def retrieve(self) -> JSON:
+        return self._client.request("GET", "/organization")
+
+    def update(self, *, name: str) -> JSON:
+        """Rename it. The region is fixed at creation and cannot change."""
+        return self._client.request("PATCH", "/organization", json={"name": name})
+
+    def regions(self) -> JSON:
+        """The regions this deployment offers.
+
+        Each is a separate stack with its own base URL, so reaching an
+        organization in another region means pointing ``base_url`` there with a
+        key issued there.
+        """
+        return self._client.request("GET", "/regions")
+
+
 class AsyncGlytos:
     """Asynchronous Glytos API client (the async twin of :class:`Glytos`).
 
@@ -1177,6 +1573,7 @@ class AsyncGlytos:
         self.imports = AsyncImports(self)
         self.calls = AsyncCalls(self)
         self.phone_numbers = AsyncPhoneNumbers(self)
+        self.sip_trunks = AsyncSipTrunks(self)
         self.sessions = AsyncSessions(self)
         self.webhooks = AsyncWebhooks(self)
         self.campaigns = AsyncCampaigns(self)
@@ -1186,6 +1583,14 @@ class AsyncGlytos:
         self.knowledge_base = AsyncKnowledgeBase(self)
         self.vector_stores = AsyncVectorStores(self)
         self.analytics = AsyncAnalytics(self)
+        self.test_suites = AsyncTestSuites(self)
+        self.integrations = AsyncIntegrations(self)
+        self.automations = AsyncAutomations(self)
+        self.billing = AsyncBilling(self)
+        self.environments = AsyncEnvironments(self)
+        self.providers = AsyncProviders(self)
+        self.api_keys = AsyncApiKeys(self)
+        self.organizations = AsyncOrganizations(self)
 
     async def request(
         self,
@@ -1270,9 +1675,22 @@ class AsyncWorkflows(_AsyncResource):
         return await self._client.request("GET", f"/workflows/{quote(workflow_uuid, safe='')}")
 
     async def create(
-        self, *, name: str, mode: str = "prompt", config: dict[str, Any] | None = None
+        self,
+        *,
+        name: str,
+        mode: str = "prompt",
+        primary_channel: str | None = None,
+        config: dict[str, Any] | None = None,
     ) -> JSON:
+        """Create an agent.
+
+        ``mode`` is ``prompt`` or ``workflow``; ``primary_channel`` is ``voice``
+        or ``chat``. A new agent always lands in Development, whatever environment
+        the client is scoped to.
+        """
         body: dict[str, Any] = {"name": name, "mode": mode}
+        if primary_channel is not None:
+            body["primary_channel"] = primary_channel
         if config is not None:
             body["config"] = config
         return await self._client.request("POST", "/workflows", json=body)
@@ -1474,7 +1892,14 @@ class AsyncPhoneNumbers(_AsyncResource):
         provider_sid: str | None = None,
         credentials: dict[str, Any] | None = None,
         workflow_uuid: str | None = None,
+        sip_trunk_uuid: str | None = None,
     ) -> JSON:
+        """Connect a number you already own at a carrier.
+
+        Pass ``sip_trunk_uuid`` instead when the number arrives over a SIP trunk
+        you registered: there is no carrier account to look it up in, and the
+        trunk's registration is the ownership proof.
+        """
         body: dict[str, Any] = {"e164": e164}
         if provider is not None:
             body["provider"] = provider
@@ -1484,6 +1909,8 @@ class AsyncPhoneNumbers(_AsyncResource):
             body["credentials"] = credentials
         if workflow_uuid is not None:
             body["workflow_uuid"] = workflow_uuid
+        if sip_trunk_uuid is not None:
+            body["sip_trunk_uuid"] = sip_trunk_uuid
         return await self._client.request("POST", "/telephony/numbers/import", json=body)
 
     async def instant(self, *, country: str | None = None, provider: str | None = None) -> JSON:
@@ -1957,6 +2384,20 @@ class AsyncImports(_AsyncResource):
             "POST", f"/imports/{quote(source, safe='')}", json={"payload": payload}
         )
 
+    async def connect(self, source: str, *, api_key: str) -> JSON:
+        """List what is on the other platform. The key is never stored."""
+        return await self._client.request(
+            "POST", f"/imports/{quote(source, safe='')}/connect", json={"api_key": api_key}
+        )
+
+    async def pull(self, source: str, *, api_key: str, agent_ids: Sequence[str]) -> JSON:
+        """Bring over the agents you picked from :meth:`connect`."""
+        return await self._client.request(
+            "POST",
+            f"/imports/{quote(source, safe='')}/pull",
+            json={"api_key": api_key, "agent_ids": list(agent_ids)},
+        )
+
     async def assistant(self, assistant: dict[str, Any]) -> JSON:
         """Bring over an assistant definition, tools and all."""
         return await self._client.request(
@@ -1965,10 +2406,26 @@ class AsyncImports(_AsyncResource):
 
 
 class AsyncTools(_AsyncResource):
-    """Reusable tools an agent can call (``kind`` = http / static / mcp)."""
+    """Reusable tools an agent can call.
+
+    ``kind`` is one of ``static``, ``http``, ``mcp``, ``code``, ``integration``
+    or ``client``. An ``integration`` tool names its connection in ``config``, so
+    the model fills in arguments but never chooses the destination.
+    """
 
     async def list(self) -> JSON:
         return await self._client.request("GET", "/tools")
+
+    async def discover_mcp(self, *, server_url: str, headers: dict[str, str] | None = None) -> JSON:
+        """Ask an MCP server what it publishes. Returns the tool list itself."""
+        body: dict[str, Any] = {"server_url": server_url}
+        if headers is not None:
+            body["headers"] = headers
+        result = await self._client.request("POST", "/tools/mcp/discover", json=body)
+        if isinstance(result, dict):
+            tools = result.get("tools")
+            return tools if isinstance(tools, list) else []
+        return []
 
     async def create(
         self,
@@ -2020,6 +2477,18 @@ class AsyncKnowledgeBase(_AsyncResource):
 
     async def list_documents(self) -> JSON:
         return await self._client.request("GET", "/knowledge-base/documents")
+
+    async def retrieve_document(self, document_id: int | str) -> JSON:
+        """One document, including its extracted text."""
+        return await self._client.request(
+            "GET", f"/knowledge-base/documents/{quote(str(document_id), safe='')}"
+        )
+
+    async def delete_document(self, document_id: int | str) -> JSON:
+        """Delete a document, with its chunks and embeddings."""
+        return await self._client.request(
+            "DELETE", f"/knowledge-base/documents/{quote(str(document_id), safe='')}"
+        )
 
     async def create_document(
         self,
@@ -2098,3 +2567,282 @@ class AsyncAnalytics(_AsyncResource):
 
     async def overview(self, *, days: int | None = None) -> JSON:
         return await self._client.request("GET", "/analytics/overview", params={"days": days})
+
+
+class AsyncSipTrunks(_AsyncResource):
+    """BYO SIP trunks: connect a carrier directly, with nothing in between."""
+
+    async def presets(self) -> JSON:
+        """Carriers whose settings are known, so you supply only the login."""
+        return await self._client.request("GET", "/telephony/sip-trunks/presets")
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/telephony/sip-trunks")
+
+    async def create(self, *, username: str, password: str, **body: Any) -> JSON:
+        """Register a trunk. The password is stored encrypted and never returned."""
+        return await self._client.request(
+            "POST",
+            "/telephony/sip-trunks",
+            json={"username": username, "password": password, **body},
+        )
+
+    async def update(self, trunk_uuid: str, **body: Any) -> JSON:
+        return await self._client.request(
+            "PATCH", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}", json=body
+        )
+
+    async def delete(self, trunk_uuid: str) -> JSON:
+        return await self._client.request(
+            "DELETE", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}"
+        )
+
+    async def test(self, trunk_uuid: str) -> JSON:
+        """Re-check the trunk now.
+
+        ``reachable`` separates "the carrier refused these credentials" from
+        "nobody answered"; only the first is worth changing the password over.
+        """
+        return await self._client.request(
+            "POST", f"/telephony/sip-trunks/{quote(trunk_uuid, safe='')}/test"
+        )
+
+
+class AsyncTestSuites(_AsyncResource):
+    """Saved conversations replayed against an agent, to catch regressions."""
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/test-suites")
+
+    async def create(
+        self, *, workflow_uuid: str, name: str, cases: Sequence[dict[str, Any]] | None = None
+    ) -> JSON:
+        body: dict[str, Any] = {"workflow_uuid": workflow_uuid, "name": name}
+        if cases is not None:
+            body["cases"] = list(cases)
+        return await self._client.request("POST", "/test-suites", json=body)
+
+    async def delete(self, suite_uuid: str) -> JSON:
+        return await self._client.request("DELETE", f"/test-suites/{quote(suite_uuid, safe='')}")
+
+    async def run(self, suite_uuid: str) -> JSON:
+        """Run every case. This runs the agent, so it spends credit."""
+        return await self._client.request("POST", f"/test-suites/{quote(suite_uuid, safe='')}/run")
+
+
+class AsyncIntegrationConnections(_AsyncResource):
+    """The configured destinations behind an integration."""
+
+    async def list(self, *, integration_key: str | None = None) -> JSON:
+        return await self._client.request(
+            "GET", "/integrations/connections", params={"integration_key": integration_key}
+        )
+
+    async def create(self, *, integration_key: str, name: str, data: dict[str, Any]) -> JSON:
+        """Configure a destination. Credentials are encrypted at rest, masked on read."""
+        return await self._client.request(
+            "POST",
+            "/integrations/connections",
+            json={"integration_key": integration_key, "name": name, "data": data},
+        )
+
+    async def update(
+        self,
+        connection_uuid: str,
+        *,
+        name: str | None = None,
+        data: dict[str, Any] | None = None,
+        is_active: bool | None = None,
+    ) -> JSON:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if data is not None:
+            body["data"] = data
+        if is_active is not None:
+            body["is_active"] = is_active
+        return await self._client.request(
+            "PATCH", f"/integrations/connections/{quote(connection_uuid, safe='')}", json=body
+        )
+
+    async def delete(self, connection_uuid: str) -> JSON:
+        return await self._client.request(
+            "DELETE", f"/integrations/connections/{quote(connection_uuid, safe='')}"
+        )
+
+    async def run(
+        self, connection_uuid: str, *, action: str, params: dict[str, Any] | None = None
+    ) -> JSON:
+        return await self._client.request(
+            "POST",
+            f"/integrations/connections/{quote(connection_uuid, safe='')}/run",
+            json={"action": action, "params": params or {}},
+        )
+
+
+class AsyncIntegrations(_AsyncResource):
+    """Third-party destinations, and the connections holding their credentials."""
+
+    def __init__(self, client: AsyncGlytos):
+        super().__init__(client)
+        self.connections = AsyncIntegrationConnections(client)
+
+    async def list(self) -> JSON:
+        """The catalog: what can be connected, and the actions each one offers."""
+        return await self._client.request("GET", "/integrations")
+
+    async def run(
+        self, integration_key: str, *, action: str, params: dict[str, Any] | None = None
+    ) -> JSON:
+        """Run an action on whatever credentials the organization saved for this key.
+
+        Prefer :meth:`AsyncIntegrationConnections.run`: this is ambiguous once
+        there is more than one destination for the same integration.
+        """
+        return await self._client.request(
+            "POST",
+            f"/integrations/{quote(integration_key, safe='')}/run",
+            json={"action": action, "params": params or {}},
+        )
+
+
+class AsyncAutomations(_AsyncResource):
+    """When this happens, do that: an event fires an integration action.
+
+    Automations run in the background after the event, never during a call, and a
+    failure is recorded rather than allowed to affect the conversation.
+    """
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/automations")
+
+    async def create(
+        self,
+        *,
+        name: str,
+        trigger_event: str,
+        connection_uuid: str,
+        action: str,
+        payload_template: dict[str, Any] | None = None,
+        conditions: dict[str, Any] | None = None,
+    ) -> JSON:
+        body: dict[str, Any] = {
+            "name": name,
+            "trigger_event": trigger_event,
+            "connection_uuid": connection_uuid,
+            "action": action,
+        }
+        if payload_template is not None:
+            body["payload_template"] = payload_template
+        if conditions is not None:
+            body["conditions"] = conditions
+        return await self._client.request("POST", "/automations", json=body)
+
+    async def update(self, automation_uuid: str, **body: Any) -> JSON:
+        """Update an automation, including pausing it with ``is_active=False``."""
+        return await self._client.request(
+            "PATCH", f"/automations/{quote(automation_uuid, safe='')}", json=body
+        )
+
+    async def delete(self, automation_uuid: str) -> JSON:
+        return await self._client.request(
+            "DELETE", f"/automations/{quote(automation_uuid, safe='')}"
+        )
+
+    async def runs(self, automation_uuid: str, *, limit: int | None = None) -> JSON:
+        """Recent firings, newest first: what ran, and what came back."""
+        return await self._client.request(
+            "GET", f"/automations/{quote(automation_uuid, safe='')}/runs", params={"limit": limit}
+        )
+
+    async def test(self, automation_uuid: str, *, payload: dict[str, Any] | None = None) -> JSON:
+        """Fire it once against a payload you supply, before trusting a real event."""
+        return await self._client.request(
+            "POST",
+            f"/automations/{quote(automation_uuid, safe='')}/test",
+            json={"payload": payload or {}},
+        )
+
+
+class AsyncBilling(_AsyncResource):
+    """Credit balance, ledger and usage."""
+
+    async def credits(self) -> JSON:
+        """The current prepaid balance. Check it before a large outbound run."""
+        return await self._client.request("GET", "/billing/credits")
+
+    async def transactions(self, *, kind: str | None = None, limit: int | None = None) -> JSON:
+        """The credit ledger: top-ups and debits, newest first."""
+        return await self._client.request(
+            "GET", "/billing/credits/transactions", params={"kind": kind, "limit": limit}
+        )
+
+    async def usage(self) -> JSON:
+        return await self._client.request("GET", "/billing/usage")
+
+
+class AsyncEnvironments(_AsyncResource):
+    """Development, Staging and Production."""
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/environments")
+
+
+class AsyncProviders(_AsyncResource):
+    """The model, transcriber and voice catalog."""
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/providers")
+
+    async def resources(self, service_type: str, key: str, *, language: str | None = None) -> JSON:
+        """One provider's live models and voices, where it publishes them."""
+        return await self._client.request(
+            "GET",
+            f"/providers/{quote(service_type, safe='')}/{quote(key, safe='')}/resources",
+            params={"language": language},
+        )
+
+
+class AsyncApiKeys(_AsyncResource):
+    """Keys for calling this API."""
+
+    async def list(self) -> JSON:
+        return await self._client.request("GET", "/api-keys")
+
+    async def create(
+        self,
+        *,
+        name: str,
+        expires_in_days: int | None = None,
+        scopes: Sequence[str] | None = None,
+    ) -> JSON:
+        """Create a key. The secret is in the response and nowhere else.
+
+        ``scopes`` bounds what the key may do and cannot exceed what you hold.
+        Omit it and the key inherits your permissions, which means it stops
+        working if you leave the organization.
+        """
+        body: dict[str, Any] = {"name": name}
+        if expires_in_days is not None:
+            body["expires_in_days"] = expires_in_days
+        if scopes is not None:
+            body["scopes"] = list(scopes)
+        return await self._client.request("POST", "/api-keys", json=body)
+
+    async def delete(self, key_id: int | str) -> JSON:
+        return await self._client.request("DELETE", f"/api-keys/{quote(str(key_id), safe='')}")
+
+
+class AsyncOrganizations(_AsyncResource):
+    """The organization this key belongs to, and the available regions."""
+
+    async def retrieve(self) -> JSON:
+        return await self._client.request("GET", "/organization")
+
+    async def update(self, *, name: str) -> JSON:
+        """Rename it. The region is fixed at creation and cannot change."""
+        return await self._client.request("PATCH", "/organization", json={"name": name})
+
+    async def regions(self) -> JSON:
+        """The regions this deployment offers, each a separate stack."""
+        return await self._client.request("GET", "/regions")

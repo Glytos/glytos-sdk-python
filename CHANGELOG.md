@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file. The format is b
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `sip_trunks` - connect a carrier directly over SIP, with no third party in
+  between: `presets`, `list`, `create`, `update`, `delete`, `test`. Numbers are
+  attached to a registered trunk through `phone_numbers.import_number`, which now
+  accepts `sip_trunk_uuid`.
+- `integrations` and `integrations.connections` - the destinations an agent or an
+  automation can act on, and the named connections holding their credentials.
+- `automations` - fire an integration action when an event happens: `list`,
+  `create`, `update`, `delete`, `runs`, `test`.
+- `test_suites` - `list`, `create`, `delete`, `run`.
+- `billing` - `credits`, `transactions`, `usage`. Checking the balance before a
+  long outbound run no longer needs a raw `request` call.
+- `environments.list`, `providers.list`, `providers.resources`, `api_keys.list`
+  /`create`/`delete`, `organizations.retrieve`/`update`/`regions`.
+- `knowledge_base.retrieve_document` and `knowledge_base.delete_document`.
+  Documents could be created and listed but never read back or removed.
+- `tools.discover_mcp` - ask an MCP server what it publishes, instead of
+  transcribing its schema by hand.
+- `imports.connect` and `imports.pull` - list the agents on another platform with
+  its API key, then bring over the ones you pick. The key is never stored.
+- `workflows.create` accepts `primary_channel`.
+
+Every addition is on both `Glytos` and `AsyncGlytos`, under the same names.
+
+### Fixed
+
+- The `Tools` docstring said `kind` was http / static / mcp. The API has accepted
+  `code`, `integration` and `client` since they shipped, and the docstring now
+  says what each of the six does.
+- The README's resource table had drifted: it was missing several agent methods
+  that shipped some time ago, and did not mention that the async client carries
+  the same surface.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
