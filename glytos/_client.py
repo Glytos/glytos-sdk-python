@@ -1207,6 +1207,13 @@ class VectorStores(_Resource):
     def delete(self, vector_store_uuid: str) -> JSON:
         return self._client.request("DELETE", f"/vector-stores/{quote(vector_store_uuid, safe='')}")
 
+    def remove_document(self, vector_store_uuid: str, document_id: int) -> JSON:
+        """Take a document out of a store. The document itself is not deleted."""
+        return self._client.request(
+            "DELETE",
+            f"/vector-stores/{quote(vector_store_uuid, safe='')}/documents/{document_id}",
+        )
+
     def upload_document(
         self, vector_store_uuid: str, file: bytes | str, filename: str = "document"
     ) -> JSON:
@@ -2565,6 +2572,13 @@ class AsyncVectorStores(_AsyncResource):
     async def delete(self, vector_store_uuid: str) -> JSON:
         return await self._client.request(
             "DELETE", f"/vector-stores/{quote(vector_store_uuid, safe='')}"
+        )
+
+    async def remove_document(self, vector_store_uuid: str, document_id: int) -> JSON:
+        """Take a document out of a store. The document itself is not deleted."""
+        return await self._client.request(
+            "DELETE",
+            f"/vector-stores/{quote(vector_store_uuid, safe='')}/documents/{document_id}",
         )
 
     async def upload_document(
