@@ -1288,6 +1288,24 @@ class TestSuites(_Resource):
             body["cases"] = list(cases)
         return self._client.request("POST", "/test-suites", json=body)
 
+    def update(
+        self,
+        suite_uuid: str,
+        *,
+        name: str | None = None,
+        workflow_uuid: str | None = None,
+        cases: Sequence[dict[str, Any]] | None = None,
+    ) -> JSON:
+        """Rename a suite, repoint it at another agent, or rewrite its cases."""
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if workflow_uuid is not None:
+            body["workflow_uuid"] = workflow_uuid
+        if cases is not None:
+            body["cases"] = list(cases)
+        return self._client.request("PUT", f"/test-suites/{quote(suite_uuid, safe='')}", json=body)
+
     def delete(self, suite_uuid: str) -> JSON:
         return self._client.request("DELETE", f"/test-suites/{quote(suite_uuid, safe='')}")
 
@@ -2621,6 +2639,26 @@ class AsyncTestSuites(_AsyncResource):
         if cases is not None:
             body["cases"] = list(cases)
         return await self._client.request("POST", "/test-suites", json=body)
+
+    async def update(
+        self,
+        suite_uuid: str,
+        *,
+        name: str | None = None,
+        workflow_uuid: str | None = None,
+        cases: Sequence[dict[str, Any]] | None = None,
+    ) -> JSON:
+        """Rename a suite, repoint it at another agent, or rewrite its cases."""
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if workflow_uuid is not None:
+            body["workflow_uuid"] = workflow_uuid
+        if cases is not None:
+            body["cases"] = list(cases)
+        return await self._client.request(
+            "PUT", f"/test-suites/{quote(suite_uuid, safe='')}", json=body
+        )
 
     async def delete(self, suite_uuid: str) -> JSON:
         return await self._client.request("DELETE", f"/test-suites/{quote(suite_uuid, safe='')}")
