@@ -91,7 +91,7 @@ Everything above has an async twin on `AsyncGlytos` (`async for` over the stream
 | `glytos.knowledge_base` | `list_documents`, `create_document`, `upload_document`, `retrieve_document`, `delete_document`, `search` |
 | `glytos.vector_stores` | `list`, `create`, `retrieve`, `delete`, `upload_document` |
 | `glytos.tools` | `list`, `create`, `update`, `delete`, `discover_mcp` |
-| `glytos.campaigns` | `list`, `create`, `retrieve`, `start`, `stop`, `delete`, `add_contacts`, `sync_contacts`, `preview_suppression` |
+| `glytos.campaigns` | `list`, `create`, `retrieve`, `update`, `unschedule`, `duplicate`, `export`, `start`, `stop`, `delete`, `add_contacts`, `sync_contacts`, `preview_suppression` |
 | `glytos.dnc` | `list`, `add`, `import_`, `set_scope`, `remove` |
 | `glytos.integrations` | `list`, `run`, `connections.list`, `connections.create`, `connections.update`, `connections.delete`, `connections.run` |
 | `glytos.automations` | `list`, `create`, `update`, `delete`, `runs`, `test` |

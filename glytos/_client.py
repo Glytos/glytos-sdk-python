@@ -815,6 +815,69 @@ class Campaigns(_Resource):
             "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/stop"
         )
 
+    def update(
+        self,
+        campaign_uuid: str,
+        *,
+        name: str | None = None,
+        scheduled_at: str | None = None,
+        call_window_start: str | None = None,
+        call_window_end: str | None = None,
+        timezone: str | None = None,
+    ) -> JSON:
+        """Rename a campaign, or change when and within what hours it dials.
+
+        A rename is accepted at any point. The schedule and the calling window
+        can only be changed before the campaign starts: moving the start of one
+        already dialing would say nothing about the calls it has placed.
+
+        Anything left unset is left alone. To remove a schedule entirely, use
+        :meth:`unschedule` - omitting a field and clearing it are different
+        instructions and only one of them can be expressed by absence.
+        """
+        body = {
+            "name": name,
+            "scheduled_at": scheduled_at,
+            "call_window_start": call_window_start,
+            "call_window_end": call_window_end,
+            "timezone": timezone,
+        }
+        return self._client.request(
+            "PATCH",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}",
+            json={k: v for k, v in body.items() if v is not None},
+        )
+
+    def unschedule(self, campaign_uuid: str) -> JSON:
+        """Clear a campaign's schedule, returning it to a draft that waits for start."""
+        return self._client.request(
+            "PATCH",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}",
+            json={"scheduled_at": None},
+        )
+
+    def duplicate(self, campaign_uuid: str, name: str | None = None) -> JSON:
+        """Copy a campaign and its contact list into a fresh draft.
+
+        Nothing dials and no outcome is copied, so this is how you run the same
+        list again or reuse a setup against a new one.
+        """
+        return self._client.request(
+            "POST",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/duplicate",
+            json={"name": name} if name is not None else {},
+        )
+
+    def export(self, campaign_uuid: str) -> JSON:
+        """The contacts and what came of each, as CSV text.
+
+        Columns are phone, outcome, dialed_at, error and session_uuid; the
+        session uuid joins a result back to the conversation that produced it.
+        """
+        return self._client.request(
+            "GET", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/export"
+        )
+
     def delete(self, campaign_uuid: str) -> JSON:
         """Remove a campaign and its contact list, stopping it first if running."""
         return self._client.request(
@@ -2025,6 +2088,56 @@ class AsyncCampaigns(_AsyncResource):
         """
         return await self._client.request(
             "POST", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/stop"
+        )
+
+    async def update(
+        self,
+        campaign_uuid: str,
+        *,
+        name: str | None = None,
+        scheduled_at: str | None = None,
+        call_window_start: str | None = None,
+        call_window_end: str | None = None,
+        timezone: str | None = None,
+    ) -> JSON:
+        """Rename a campaign, or change when and within what hours it dials.
+
+        The schedule and the calling window can only be changed before the
+        campaign starts. To remove a schedule entirely, use :meth:`unschedule`.
+        """
+        body = {
+            "name": name,
+            "scheduled_at": scheduled_at,
+            "call_window_start": call_window_start,
+            "call_window_end": call_window_end,
+            "timezone": timezone,
+        }
+        return await self._client.request(
+            "PATCH",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}",
+            json={k: v for k, v in body.items() if v is not None},
+        )
+
+    async def unschedule(self, campaign_uuid: str) -> JSON:
+        """Clear a campaign's schedule, returning it to a draft that waits for start."""
+        return await self._client.request(
+            "PATCH",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}",
+            json={"scheduled_at": None},
+        )
+
+    async def duplicate(self, campaign_uuid: str, name: str | None = None) -> JSON:
+        """Copy a campaign and its contact list into a fresh draft. Nothing dials."""
+        return await self._client.request(
+            "POST",
+            f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/duplicate",
+            json={"name": name} if name is not None else {},
+        )
+
+    async def export(self, campaign_uuid: str) -> JSON:
+        """The contacts and what came of each, as CSV text."""
+        return await self._client.request(
+            "GET", f"/telephony/campaigns/{quote(campaign_uuid, safe='')}/export"
         )
 
     async def delete(self, campaign_uuid: str) -> JSON:

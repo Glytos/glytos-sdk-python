@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `campaigns.update`, `campaigns.unschedule`, `campaigns.duplicate` and
+  `campaigns.export`, on both `Glytos` and `AsyncGlytos`. A rename is accepted at
+  any point; the schedule and the calling window can only be changed before a
+  campaign starts. `unschedule` is separate because `update` drops anything left
+  unset, and clearing a schedule has to send an explicit null.
+- Campaigns now report `counts` and `workflow_name`, and creating one returns an
+  `imported` receipt. Measure progress against `counts["dialable"]` rather than
+  `counts["total"]`: suppressed numbers are never dialed.
+
 - `sip_trunks` - connect a carrier directly over SIP, with no third party in
   between: `presets`, `list`, `create`, `update`, `delete`, `test`. Numbers are
   attached to a registered trunk through `phone_numbers.import_number`, which now

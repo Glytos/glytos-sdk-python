@@ -244,3 +244,63 @@ def test_async_campaign_and_dnc_reach_the_same_endpoints() -> None:
             assert captured["request"].method == "DELETE"
 
     asyncio.run(run())
+
+
+def test_update_sends_only_what_it_was_given() -> None:
+    captured, handler = capturing()
+    make_client(handler).campaigns.update("camp-1", name="Renamed")
+
+    request = captured["request"]
+    assert request.method == "PATCH"
+    assert request.url.path.endswith("/telephony/campaigns/camp-1")
+    assert json.loads(request.content) == {"name": "Renamed"}
+
+
+def test_unschedule_sends_the_null_that_absence_cannot_express() -> None:
+    # `update` drops anything left unset, so clearing a schedule needs its own
+    # method: omitting the field and setting it to nothing are different
+    # instructions and only one of them survives a dict comprehension.
+    captured, handler = capturing()
+    make_client(handler).campaigns.unschedule("camp-1")
+
+    assert json.loads(captured["request"].content) == {"scheduled_at": None}
+
+
+def test_duplicate_posts_to_the_campaign_it_copies() -> None:
+    captured, handler = capturing()
+    make_client(handler).campaigns.duplicate("camp-1", "Second run")
+
+    request = captured["request"]
+    assert request.method == "POST"
+    assert request.url.path.endswith("/telephony/campaigns/camp-1/duplicate")
+    assert json.loads(request.content) == {"name": "Second run"}
+
+
+def test_export_returns_csv_text_rather_than_failing_to_parse_it() -> None:
+    csv = "phone,outcome,dialed_at,error,session_uuid\n+905551112233,answered,,,run-1\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=csv)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    assert Glytos(api_key="gly_test", http_client=http).campaigns.export("camp-1") == csv
+
+
+def test_the_async_client_carries_the_same_campaign_methods() -> None:
+    # The two clients are kept at deliberate parity, and a method added to one
+    # and not the other is the failure mode this file exists to catch.
+    captured, handler = capturing()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = AsyncGlytos(api_key="gly_test", http_client=http)
+
+    asyncio.run(client.campaigns.update("camp-1", name="Renamed"))
+    assert json.loads(captured["request"].content) == {"name": "Renamed"}
+
+    asyncio.run(client.campaigns.unschedule("camp-1"))
+    assert json.loads(captured["request"].content) == {"scheduled_at": None}
+
+    asyncio.run(client.campaigns.duplicate("camp-1"))
+    assert captured["request"].url.path.endswith("/telephony/campaigns/camp-1/duplicate")
+
+    asyncio.run(client.campaigns.export("camp-1"))
+    assert captured["request"].url.path.endswith("/telephony/campaigns/camp-1/export")
