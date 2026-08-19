@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-19
+
 ### Added
 
 - `campaigns.update`, `campaigns.unschedule`, `campaigns.duplicate` and
@@ -16,6 +18,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Campaigns now report `counts` and `workflow_name`, and creating one returns an
   `imported` receipt. Measure progress against `counts["dialable"]` rather than
   `counts["total"]`: suppressed numbers are never dialed.
+
+## [0.4.0] - 2026-08-17
+
+### Added
 
 - `sip_trunks` - connect a carrier directly over SIP, with no third party in
   between: `presets`, `list`, `create`, `update`, `delete`, `test`. Numbers are
